@@ -5,8 +5,9 @@ curl -fsSL https://raw.githubusercontent.com/eRegister/upgrade-to-v1/refs/heads/
 ```
 
 > [!WARNING]
-> The `openmrs-v1-modules` repo is ~246 MB, so the "Fetching v1 sources" step
-> will pause there for a while on a slow connection. This is expected — let it run.
+> If you need to do the upgrade process again, remember to run:
+> `docker volume rm $(docker volume ls -q)` to clean all volumes.
+> Make sure all volumes are deleted with `docker volume ls`
 
 An example of how to use flags below:
 
