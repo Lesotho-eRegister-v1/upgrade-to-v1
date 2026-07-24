@@ -28,7 +28,8 @@
 #   After a successful upgrade, the installer offers to schedule a job that
 #   periodically pulls the v1 asset/config repos (standard-config-ls,
 #   implementer-interface-release, openmrs-v1-modules, clinical-obs-forms,
-#   dhisconnector_mappings_v1) via a systemd timer, or an /etc/cron.d entry
+#   dhisconnector_mappings_v1, eregister_concepts_release_v1) via a systemd
+#   timer, or an /etc/cron.d entry
 #   where systemd is absent. Control it:
 #     EREGISTER_AUTO_PULL=0            Disable the feature entirely.
 #     EREGISTER_AUTO_PULL_ONCALENDAR   systemd OnCalendar (default: '*-*-* 02:30:00').

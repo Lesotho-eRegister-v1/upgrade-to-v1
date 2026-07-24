@@ -10,6 +10,7 @@
 #     openmrs-v1-modules
 #     clinical-obs-forms
 #     dhisconnector_mappings_v1
+#     eregister_concepts_release_v1
 #
 # Deliberately EXCLUDES bahmni-docker-ls (the stack itself) and the 0.92
 # bahmni_config under bahmni-backup — those are pinned to the deployed release
@@ -31,7 +32,8 @@ auto_pull_dirs() {
     "${V1_DIR}/implementer-interface-release" \
     "${V1_DIR}/openmrs-v1-modules" \
     "${V1_DIR}/clinical-obs-forms" \
-    "${V1_DIR}/dhisconnector_mappings_v1"
+    "${V1_DIR}/dhisconnector_mappings_v1" \
+    "${V1_DIR}/eregister_concepts_release_v1"
 }
 
 has_systemd() {

@@ -82,7 +82,8 @@ ${C_OK}════════════════════════�
   Auto-updates:
     If you accepted the auto-update step, the asset/config repos
     (standard-config-ls, implementer-interface-release, openmrs-v1-modules,
-    clinical-obs-forms) are pulled on a schedule by ${AUTO_PULL_SCRIPT}
+    clinical-obs-forms, dhisconnector_mappings_v1,
+    eregister_concepts_release_v1) are pulled on a schedule by ${AUTO_PULL_SCRIPT}
     (${C_DIM}systemd: ${AUTO_PULL_UNIT}.timer, or /etc/cron.d/${AUTO_PULL_UNIT}${C_RESET}).
     Run a sync now:  ${AUTO_PULL_SCRIPT}
     Log:             ${AUTO_PULL_LOG}

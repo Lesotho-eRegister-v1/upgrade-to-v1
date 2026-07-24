@@ -52,7 +52,8 @@ RAW_BASE="${EREGISTER_RAW_BASE:-https://raw.githubusercontent.com/eRegister/upgr
 # --- Auto-update (periodic git pull of the v1 asset/config repos) ------------
 # After a successful upgrade, a scheduled job keeps the asset/config repos
 # (standard-config-ls, implementer-interface-release, openmrs-v1-modules,
-# clinical-obs-forms, dhisconnector_mappings_v1) in sync with their remotes.
+# clinical-obs-forms, dhisconnector_mappings_v1, eregister_concepts_release_v1)
+# in sync with their remotes.
 # Implemented as a systemd timer
 # where systemd is available, else an /etc/cron.d entry. See lib/upgrade/autopull.sh.
 AUTO_PULL="${EREGISTER_AUTO_PULL:-1}"                 # 0 disables the whole feature
@@ -78,6 +79,9 @@ REPO_OBS_FORMS="https://github.com/Lesotho-eRegister-v1/clinical-obs-forms"
 # DHIS2 connector mappings — content that keeps changing after deployment, so
 # it is cloned with the other assets and kept in sync by the auto-pull job.
 REPO_DHIS_MAPPINGS="https://github.com/Lesotho-eRegister-v1/dhisconnector_mappings_v1"
+# Concept dictionary release — also evolves after deployment, so it is cloned
+# with the other assets and kept in sync by the auto-pull job.
+REPO_CONCEPTS="https://github.com/Lesotho-eRegister-v1/eregister_concepts_release_v1"
 
 # Per-repo git refs (branch/tag/sha). The Lesotho repos have no 'main' branch;
 # their v1 line lives on 'Bokang-changes'. config092 uses 'main'.
@@ -91,6 +95,8 @@ REF_IMPL_INTERFACE="${EREGISTER_REF_IMPL_INTERFACE:-main}"
 REF_OBS_FORMS="${EREGISTER_REF_OBS_FORMS:-main}"
 # dhisconnector_mappings_v1 has no 'main'; its default branch is 'master'.
 REF_DHIS_MAPPINGS="${EREGISTER_REF_DHIS_MAPPINGS:-master}"
+# eregister_concepts_release_v1 publishes 'main'.
+REF_CONCEPTS="${EREGISTER_REF_CONCEPTS:-main}"
 
 # Derived paths (finalized in resolve_config once INSTALL_BASE is known)
 V1_DIR=""             # <base>/v1
