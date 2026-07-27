@@ -76,6 +76,14 @@ without a full re-run.
 - Run a one-off sync by hand: `sudo /usr/local/bin/eregister-autopull.sh`
   (log: `/var/log/eregister-autopull.log`).
 
+You can configure the cronjob like so:
+
+`sudo crontab -e`
+`# Top of every hour (00:00, 01:00, 02:00 ...)`
+`0 * * * * /usr/local/bin/eregister-autopull.sh >> /var/log/eregister-autopull.log 2>&1`
+Remember to `sudo chmod +x /usr/local/bin/eregister-autopull.sh`
+
+
 Tune or disable via env vars: `EREGISTER_AUTO_PULL=0` (off),
 `EREGISTER_AUTO_PULL_ONCALENDAR` (systemd schedule, default `*-*-* 02:30:00`),
 `EREGISTER_AUTO_PULL_CRON` (cron schedule, default `30 2 * * *`).
