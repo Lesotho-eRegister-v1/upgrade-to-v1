@@ -1,7 +1,7 @@
 To run this script, just copy and paste this line below in your terminal:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/eRegister/upgrade-to-v1/refs/heads/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/Lesotho-eRegister-v1/upgrade-to-v1/refs/heads/main/install.sh | bash
 ```
 
 > [!WARNING]
@@ -12,7 +12,7 @@ curl -fsSL https://raw.githubusercontent.com/eRegister/upgrade-to-v1/refs/heads/
 An example of how to use flags below:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/eRegister/upgrade-to-v1/refs/heads/main/install.sh | bash -s -- --force --yes
+curl -fsSL https://raw.githubusercontent.com/Lesotho-eRegister-v1/upgrade-to-v1/refs/heads/main/install.sh | bash -s -- --force --yes
 ```
 
 What to do next:
@@ -24,7 +24,7 @@ What to do next:
 4. After the instance is FULLY up and the OCL import has finished (~30+ min), apply the OCL concept-name fix (run once):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/eRegister/upgrade-to-v1/refs/heads/main/ocl-fix.sh | bash
+curl -fsSL https://raw.githubusercontent.com/Lesotho-eRegister-v1/upgrade-to-v1/refs/heads/main/ocl-fix.sh | bash
 ```
 (or, from the upgrade repo:  `bash ./ocl-fix.sh`)
 
