@@ -39,6 +39,7 @@ print_config() {
   step "Resolved configuration"
   cat >&2 <<EOF
   ${C_DIM}App${C_RESET}            : ${APP_NAME}
+  ${C_DIM}Time${C_RESET}           : $(date '+%Y-%m-%d %H:%M:%S (%Z)')
   ${C_DIM}Current ver${C_RESET}    : ${current}
   ${C_DIM}Target ver${C_RESET}     : ${TARGET_VERSION}
   ${C_DIM}Ref override${C_RESET}   : ${TARGET_REF:-(none — using the per-repo defaults below)}$( [ -n "$TARGET_REF" ] && echo "  (tried in order; per-repo default is the last resort)" )
