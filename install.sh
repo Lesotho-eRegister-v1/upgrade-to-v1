@@ -7,7 +7,8 @@
 # lib/ (see DESIGN NOTES); only main() lives here.
 #
 # USAGE
-#   ./install.sh [--yes] [--force] [--install-dir DIR] [--target-ref REF] [--help]
+#   ./install.sh [--yes] [--force] [--install-dir DIR] [--target-ref REF]
+#                [--no-concepts] [--help]
 #
 # FLAGS / ENV
 #   -y, --yes            Non-interactive; assume "yes" to all prompts (CI/automation).
@@ -22,8 +23,19 @@
 #                        name, so a list is usually what you want:
 #                          --target-ref Bokang-changes,main
 #                        Default: empty (each repo uses its own default ref).
+#   --no-concepts        Skip the post-install concept-dictionary import.
 #   --no-color           Disable ANSI colors.
 #   -h, --help           Show help and exit.
+#
+#   After the v1 stack starts, the concept dictionary shipped in
+#   eregister_concepts_release_v1 (omrs_concept_dictionary_v1.sql) is imported
+#   into the 'openmrs' database of the openmrsdb container. It replaces the
+#   concept_*/drug* tables, so the tables it touches are dumped to
+#   <base>/v1/bahmni-backup/concepts-preimport-<stamp>.sql first. Control it:
+#     EREGISTER_IMPORT_CONCEPTS=0      Skip it (same as --no-concepts).
+#     EREGISTER_CONCEPTS_SQL_NAME      Dump filename inside the concepts repo.
+#     EREGISTER_CONCEPTS_DB_WAIT       Seconds to wait for openmrsdb (default 300).
+#   Re-run it on its own at any time with ./import-concepts.sh.
 #
 #   After a successful upgrade, the installer offers to schedule a job that
 #   periodically pulls the v1 asset/config repos (standard-config-ls,
@@ -41,7 +53,8 @@
 #   * Modules live under lib/, grouped by concern and sourced by this file:
 #       lib/core/    config, logging, traps, prompt, cli
 #       lib/system/  platform, privilege, deps
-#       lib/upgrade/ verify, detect, backup, migrate, rollback, postinstall, autopull
+#       lib/upgrade/ verify, detect, backup, migrate, rollback, postinstall,
+#                    concepts, autopull
 #     Override the lib location with EREGISTER_LIB_DIR (e.g. for system install).
 #   * Because functions now live in separate files, this is NO LONGER safe to
 #     `curl | bash` directly — clone/download the whole repo and run ./install.sh.
@@ -74,6 +87,7 @@ EREGISTER_MODULES=(
   upgrade/migrate.sh
   upgrade/rollback.sh
   upgrade/postinstall.sh
+  upgrade/concepts.sh
   upgrade/autopull.sh
 )
 
@@ -208,6 +222,14 @@ main() {
   confirm_step "Run post-install verification and finalize the upgrade"
   post_verify
   UPGRADE_COMPLETE="1"   # disarms rollback in the error trap
+
+  # --- load the v1 concept dictionary (optional, post-completion) ---------
+  # The upgrade is already finalized here, so this is advisory: a failure warns
+  # and points at the standalone runner rather than aborting or rolling back.
+  # Needs only openmrsdb, which is up well before the EMR finishes booting.
+  if ! import_concepts; then
+    warn "Concept dictionary NOT imported. Run it again later with: ./import-concepts.sh"
+  fi
 
   # --- schedule automatic repo updates (optional, post-completion) --------
   # Declining here is NOT an abort: the upgrade is already done, so this is a
