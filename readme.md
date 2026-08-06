@@ -55,8 +55,40 @@ lib/
     ├── migrate.sh               # shutdown_old_stack, fetch_repos, run_restore
     ├── rollback.sh              # rollback
     ├── postinstall.sh           # post_verify, next_steps
+    ├── concepts.sh              # import_concepts (concept dictionary -> openmrsdb)
     └── autopull.sh              # install_auto_pull (systemd timer / cron.d)
 ```
+
+# Importing the concept dictionary
+
+At the end of a run the installer loads the concept dictionary from the
+`eregister_concepts_release_v1` clone
+(`/var/lib/v1/eregister_concepts_release_v1/omrs_concept_dictionary_v1.sql`)
+into the `openmrs` database inside the `openmrsdb` container — the scripted
+version of that repo's manual `docker cp` + `mysql source` instructions.
+
+The dump is a mysqldump with `DROP TABLE IF EXISTS` + `CREATE TABLE` for the
+`concept_*` and `drug*` tables, so it **replaces** them rather than merging.
+`drug_order` is one of those tables. Before importing, the current contents of
+exactly the tables the file touches are dumped to
+`/var/lib/v1/bahmni-backup/concepts-preimport-<timestamp>.sql`; feed that file
+back the same way to undo the import.
+
+Re-run it on its own at any time (for example after the auto-pull job pulls a
+newer dictionary):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Lesotho-eRegister-v1/upgrade-to-v1/refs/heads/main/import-concepts.sh | bash
+```
+(or, from the upgrade repo: `bash ./import-concepts.sh`)
+
+OpenMRS caches concepts, so restart the EMR service afterwards for the new
+dictionary to show up:
+`docker compose restart openmrs` (from `/var/lib/v1/bahmni-docker-ls/bahmni-standard`).
+
+Skip or tune it with `--no-concepts` / `EREGISTER_IMPORT_CONCEPTS=0`,
+`EREGISTER_CONCEPTS_SQL_NAME` (dump filename) and `EREGISTER_CONCEPTS_DB_WAIT`
+(seconds to wait for `openmrsdb`, default 300).
 
 # Keeping the v1 repos up to date
 
@@ -79,8 +111,11 @@ without a full re-run.
 You can configure the cronjob like so:
 
 `sudo crontab -e`
+
 `# Top of every hour (00:00, 01:00, 02:00 ...)`
+
 `0 * * * * /usr/local/bin/eregister-autopull.sh >> /var/log/eregister-autopull.log 2>&1`
+
 Remember to `sudo chmod +x /usr/local/bin/eregister-autopull.sh`
 
 
