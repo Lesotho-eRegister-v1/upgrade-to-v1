@@ -45,8 +45,19 @@ OCL_DIR="${EREGISTER_OCL_DIR:-/openmrs/data/configuration/ocl}"
 # started explicitly after the main stack comes up.
 REPORTS_SERVICE="${EREGISTER_REPORTS_SERVICE:-reports}"
 
+# --- Concept dictionary import ----------------------------------------------
+# After the v1 stack is up, the concept dictionary shipped in the
+# eregister_concepts_release_v1 clone is loaded into the 'openmrs' database of
+# the openmrsdb service. See lib/upgrade/concepts.sh.
+IMPORT_CONCEPTS="${EREGISTER_IMPORT_CONCEPTS:-1}"     # 0 (or --no-concepts) disables it
+# Filename of the dump inside the concepts repo.
+CONCEPTS_SQL_NAME="${EREGISTER_CONCEPTS_SQL_NAME:-omrs_concept_dictionary_v1.sql}"
+# How long to wait for openmrsdb to accept connections before giving up. The
+# import runs while the rest of the stack is still booting, so some slack here.
+CONCEPTS_DB_WAIT="${EREGISTER_CONCEPTS_DB_WAIT:-300}"
+
 # Raw base for self-bootstrapping the standalone helpers (kept in sync with the
-# same default in install.sh / ocl-fix.sh).
+# same default in install.sh / ocl-fix.sh / import-concepts.sh).
 RAW_BASE="${EREGISTER_RAW_BASE:-https://raw.githubusercontent.com/eRegister/upgrade-to-v1/refs/heads/main}"
 
 # --- Auto-update (periodic git pull of the v1 asset/config repos) ------------
@@ -105,6 +116,8 @@ BACKUP_DIR=""         # <base>/v1/bahmni-backup
 BACKUP_SQL=""         # <base>/v1/bahmni-backup/openmrsdb_backup.sql
 DONE_MARKER=""        # <base>/v1/.eregister-upgrade-complete
 RESTORE_DIR=""        # <base>/v1/bahmni-docker-ls/bahmni-standard
+CONCEPTS_DIR=""       # <base>/v1/eregister_concepts_release_v1
+CONCEPTS_SQL=""       # <base>/v1/eregister_concepts_release_v1/<CONCEPTS_SQL_NAME>
 
 # Runtime state (for rollback) — touched as the upgrade progresses
 WORKDIR=""
@@ -119,3 +132,6 @@ UPGRADE_COMPLETE="0"
 # running (i.e. a fresh install with nothing to migrate). Downstream steps
 # (restore, verify) read this to demote their own failures to warnings.
 BACKUP_SKIPPED="0"
+# Set by the concept import to the pre-import dump it took, so a failure can
+# point at the file that undoes it.
+CONCEPTS_PREIMPORT_SQL=""

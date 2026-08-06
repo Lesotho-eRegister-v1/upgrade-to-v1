@@ -79,6 +79,15 @@ ${C_OK}════════════════════════�
        (or, from the upgrade repo:  ./ocl-fix.sh)
     5. Once verified, the old install in ${OLD_DOCKER_DIR} can be archived.
 
+  Concept dictionary:
+    ${CONCEPTS_SQL}
+    was imported into ${DB_SERVICE}:${DB_NAME} at the end of this run
+    (pre-import copy of the replaced tables: ${CONCEPTS_PREIMPORT_SQL:-none taken}).
+    Re-run it any time — e.g. after the auto-pull job picks up a newer
+    dictionary — with:
+         curl -fsSL ${RAW_BASE}/import-concepts.sh | bash
+       (or, from the upgrade repo:  ./import-concepts.sh)
+
   Auto-updates:
     If you accepted the auto-update step, the asset/config repos
     (standard-config-ls, implementer-interface-release, openmrs-v1-modules,

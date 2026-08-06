@@ -14,6 +14,7 @@ parse_args() {
       --force)        FORCE="1" ;;
       --install-dir)  INSTALL_BASE="${2:?--install-dir needs a value}"; shift ;;
       --target-ref)   TARGET_REF="${2:?--target-ref needs a value}"; shift ;;
+      --no-concepts)  IMPORT_CONCEPTS="0" ;;
       --no-color)     USE_COLOR="no" ;;
       -h|--help)      usage; exit 0 ;;
       *) error "Unknown argument: $1"; usage; exit 2 ;;
@@ -32,6 +33,8 @@ resolve_config() {
   BACKUP_SQL="${BACKUP_DIR}/openmrsdb_backup.sql"
   DONE_MARKER="${V1_DIR}/.eregister-upgrade-complete"
   RESTORE_DIR="${V1_DIR}/bahmni-docker-ls/bahmni-standard"
+  CONCEPTS_DIR="${V1_DIR}/eregister_concepts_release_v1"
+  CONCEPTS_SQL="${CONCEPTS_DIR}/${CONCEPTS_SQL_NAME}"
 }
 
 print_config() {
@@ -50,6 +53,7 @@ print_config() {
   ${C_DIM}Install base${C_RESET}   : ${INSTALL_BASE}
   ${C_DIM}v1 dir${C_RESET}         : ${V1_DIR}
   ${C_DIM}eRegister_HOME${C_RESET} : ${eRegister_HOME}
+  ${C_DIM}Concept import${C_RESET} : $( [ "$IMPORT_CONCEPTS" = "1" ] && echo "${CONCEPTS_SQL} -> ${DB_SERVICE}:${DB_NAME}" || echo "disabled (--no-concepts)" )
   ${C_DIM}Old stack${C_RESET}      : ${OLD_DOCKER_DIR}
   ${C_DIM}EMR container${C_RESET}  : ${EMR_CONTAINER}
   ${C_DIM}Privilege${C_RESET}      : $( [ -n "$SUDO" ] && echo "sudo" || echo "direct" )
