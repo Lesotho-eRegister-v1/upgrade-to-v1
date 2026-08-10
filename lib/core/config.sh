@@ -58,7 +58,7 @@ CONCEPTS_DB_WAIT="${EREGISTER_CONCEPTS_DB_WAIT:-300}"
 
 # Raw base for self-bootstrapping the standalone helpers (kept in sync with the
 # same default in install.sh / ocl-fix.sh / import-concepts.sh).
-RAW_BASE="${EREGISTER_RAW_BASE:-https://raw.githubusercontent.com/eRegister/upgrade-to-v1/refs/heads/main}"
+RAW_BASE="${EREGISTER_RAW_BASE:-https://raw.githubusercontent.com/Lesotho-eRegister-v1/upgrade-to-v1/refs/heads/main}"
 
 # --- Auto-update (periodic git pull of the v1 asset/config repos) ------------
 # After a successful upgrade, a scheduled job keeps the asset/config repos

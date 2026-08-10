@@ -31,7 +31,7 @@
 set -euo pipefail
 
 # Raw base used to self-bootstrap modules when lib/ isn't present locally.
-EREGISTER_RAW_BASE="${EREGISTER_RAW_BASE:-https://raw.githubusercontent.com/eRegister/upgrade-to-v1/refs/heads/main}"
+EREGISTER_RAW_BASE="${EREGISTER_RAW_BASE:-https://raw.githubusercontent.com/Lesotho-eRegister-v1/upgrade-to-v1/refs/heads/main}"
 BOOTSTRAP_DIR=""   # temp dir holding downloaded modules; cleaned up on EXIT
 
 # Only the modules this helper needs (a subset of install.sh's set).
