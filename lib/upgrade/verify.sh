@@ -52,6 +52,22 @@ resolve_ref() {
   return 1
 }
 
+# -----------------------------------------------------------------------------
+# git_here — run git against a repo that may be owned by someone else.
+#
+# Site clones end up owned by whoever created them: root when the installer ran
+# under sudo, the operator when it did not. Since git 2.35 a repo whose owner is
+# not the current user is refused outright:
+#
+#     fatal: detected dubious ownership in repository at '/var/lib/v1/...'
+#
+# That is how a root-run cron job quietly stops updating a user-owned clone —
+# every command fails, and the caller reads it as "no branch" or "not a repo".
+# safe.directory=* relaxes ONLY that ownership check, for this invocation;
+# file permissions still apply exactly as before.
+# -----------------------------------------------------------------------------
+git_here() { as_root git -c safe.directory='*' "$@"; }
+
 git_clone_or_update() {
   # Idempotent clone; verifies the remote and checks out the requested ref.
   # git_clone_or_update <repo_url> <dest_dir> <default_ref>
@@ -75,19 +91,19 @@ git_clone_or_update() {
 
   if [ -d "$dest/.git" ]; then
     info "Repo exists, updating: ${dest} @ ${ref}"
-    as_root git -C "$dest" remote set-url origin "$url"
-    as_root git -C "$dest" fetch --depth 1 origin "$ref"
-    as_root git -C "$dest" checkout -f "$ref"
-    as_root git -C "$dest" reset --hard "origin/${ref}" 2>/dev/null || true
+    git_here -C "$dest" remote set-url origin "$url"
+    git_here -C "$dest" fetch --depth 1 origin "$ref"
+    git_here -C "$dest" checkout -f "$ref"
+    git_here -C "$dest" reset --hard "origin/${ref}" 2>/dev/null || true
   elif is_sha "$ref"; then
     # --branch rejects a raw SHA, so clone in full and check the commit out.
     info "Cloning ${url} @ ${ref} (full clone; SHA pin) -> ${dest}"
     as_root git clone "$url" "$dest"
-    as_root git -C "$dest" checkout -f "$ref"
+    git_here -C "$dest" checkout -f "$ref"
   else
     info "Cloning ${url} @ ${ref} -> ${dest}"
     as_root git clone --depth 1 --branch "$ref" "$url" "$dest"
   fi
   [ -d "$dest/.git" ] || { error "Clone failed: ${dest}"; return 1; }
-  success "Ready: ${dest} @ ${ref} ($(as_root git -C "$dest" rev-parse --short HEAD))"
+  success "Ready: ${dest} @ ${ref} ($(git_here -C "$dest" rev-parse --short HEAD))"
 }

@@ -34,7 +34,8 @@ curl -fsSL https://raw.githubusercontent.com/Lesotho-eRegister-v1/upgrade-to-v1/
 ```
 
 Useful flags: `--no-recreate` (skip the EMR reload — then nothing touches a
-running container), `--no-stack` (leave `bahmni-docker-ls` alone), `--no-forms`,
+running container), `--force-repos` (bring off-release repos back, discarding
+local changes), `--no-stack` (leave `bahmni-docker-ls` alone), `--no-forms`,
 `--install-dir DIR`. It exits `0` only when there are no gaps, so it also works
 as a monitoring check. Full detail: [Catching an early site up](#catching-an-early-site-up).
 
@@ -214,6 +215,22 @@ without a full re-run.
 - Run a one-off sync by hand: `sudo /usr/local/bin/eregister-autopull.sh`
   (log: `/var/log/eregister-autopull.log`).
 
+> [!IMPORTANT]
+> **Mixed clone ownership.** Depending on how each clone was made, the repos
+> under `/var/lib/v1` end up owned by `root` or by the operator. Since git 2.35
+> a repo whose owner is not the current user is refused outright —
+> `fatal: detected dubious ownership in repository at '/var/lib/v1/…'` — so a
+> root-run cron job silently stops updating a user-owned clone, and the log
+> reads like a detached HEAD rather than a permissions problem. Every git call
+> in these scripts now runs with `-c safe.directory='*'`, which relaxes that
+> ownership check only (file permissions still apply), and the auto-pull log
+> now says `git cannot read it — ownership or permissions` when git really is
+> refusing. Check a site with:
+>
+> ```bash
+> ls -ld /var/lib/v1/*/          # who owns each clone
+> ```
+
 You can configure the cronjob like so:
 
 `sudo crontab -e`
@@ -250,14 +267,32 @@ What it does, in order:
    `curl` it clones/updates `/var/lib/v1/upgrade-to-v1`. Either way it re-runs
    itself once from the fresh copy, so the checks that follow are the current
    ones. A checkout with local changes is left alone.
-2. **Updates every dependency repo** the installer pulls — `bahmni-docker-ls`,
-   `standard-config-ls`, `openmrs-v1-modules`, `implementer-interface-release`,
-   `clinical-obs-forms`, `dhisconnector_mappings_v1`,
-   `eregister_concepts_release_v1` — cloning the ones a site never got. Repos
-   with uncommitted local changes are reported and skipped, never reset. The
-   0.92 `bahmni_config` stays pinned. `bahmni-docker-ls` is updated on disk
+2. **Checks and updates every dependency repo**, cloning any a site never got:
+
+   | Repo | Pinned ref | Notes |
+   | --- | --- | --- |
+   | `clinical-obs-forms` | `main` | the forms the daily import deploys |
+   | `eregister_concepts_release_v1` | `main` | the concept dictionary dump |
+   | `implementer-interface-release` | `main` | |
+   | `standard-config-ls` | `Bokang-changes` | |
+   | `bahmni-docker-ls` | `Bokang-changes` | the stack; disk only — see below |
+   | `dhisconnector_mappings_v1` | `master` | |
+   | `openmrs-v1-modules` | `main` | ~246 MB on first clone |
+   | `upgrade-to-v1` | `main` | the site's own checkout of these scripts |
+   | `bahmni_config` (0.92) | `main` | restore-only; checked, never updated |
+
+   Each is fast-forwarded onto its pinned ref. A repo is **reported and left
+   untouched** — never reset — when it has uncommitted local changes, sits on a
+   detached HEAD, or tracks a different branch than the release pins; the row
+   says which, and `--force-repos` brings it back on-release (discarding those
+   changes). A clone pointing at a different remote is flagged, and re-pointed
+   only when it is otherwise on-release. `bahmni-docker-ls` is updated on disk
    only; the report says it needs a `docker compose up -d` at your next
    maintenance window (`--no-stack` skips it entirely).
+
+   `upgrade-to-v1` gets a row of its own in addition to the self-update in step
+   1, so the site's `/var/lib/v1/upgrade-to-v1` checkout is kept current even
+   when you ran the script from a clone somewhere else.
 3. **Reinstalls the generated helpers** — `eregister-autopull.sh`,
    `bahmni-form-import.sh`, `eregister-form-import.sh` — from the release that
    was just pulled. An existing `/etc/eregister/form-import.env` is never
@@ -315,12 +350,13 @@ no `GAP` rows, so it can be wired into monitoring:
 30 6 * * 1 /var/lib/v1/upgrade-to-v1/catch-up.sh --yes --no-forms --no-recreate >> /var/log/eregister-catchup.log 2>&1
 ```
 
-Flags: `--yes`, `--no-recreate`, `--no-stack`, `--no-forms`, `--no-concepts`
-(skips the DB count), `--install-dir DIR`, `--no-color`. Env: `EREGISTER_BAHMNI_PASS` (needed
+Flags: `--yes`, `--no-recreate`, `--force-repos`, `--no-stack`, `--no-forms`,
+`--no-concepts` (skips the DB count), `--install-dir DIR`, `--no-color`. Env: `EREGISTER_BAHMNI_PASS` (needed
 for `--yes` if the credentials file is missing), `EREGISTER_UPGRADE_REPO`,
 `EREGISTER_UPGRADE_REF`, `EREGISTER_CATCHUP_STACK_REPO=0`,
 `EREGISTER_CATCHUP_DB_CHECK=0`, `EREGISTER_CATCHUP_HTTP_TIMEOUT`,
-`EREGISTER_CATCHUP_RECREATE=0`, `EREGISTER_EMR_SERVICE`.
+`EREGISTER_CATCHUP_RECREATE=0`, `EREGISTER_CATCHUP_FORCE_REPOS=1`,
+`EREGISTER_EMR_SERVICE`.
 
 > [!WARNING]
 > The monitoring/cron use above should carry `--no-recreate`. Left on, every

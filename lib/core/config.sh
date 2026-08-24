@@ -112,6 +112,11 @@ CATCHUP_HTTP_TIMEOUT="${EREGISTER_CATCHUP_HTTP_TIMEOUT:-15}"
 # ANONYMOUS volumes are discarded and re-seeded (named volumes, and the separate
 # openmrsdb service, are untouched). 0 (or --no-recreate) skips it.
 CATCHUP_RECREATE_EMR="${EREGISTER_CATCHUP_RECREATE:-1}"
+# Bring dependency repos onto their pinned ref even when they carry uncommitted
+# local changes or sit on another branch — i.e. `git checkout -f` + `reset
+# --hard`, DISCARDING that work. Off by default: sites do hand-edit config, and
+# silently throwing that away is the one destructive thing catch-up could do.
+CATCHUP_FORCE_REPOS="${EREGISTER_CATCHUP_FORCE_REPOS:-0}"
 
 # --- Auto-update (periodic git pull of the v1 asset/config repos) ------------
 # After a successful upgrade, a scheduled job keeps the asset/config repos

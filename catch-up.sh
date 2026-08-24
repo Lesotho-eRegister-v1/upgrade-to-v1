@@ -20,7 +20,11 @@
 #
 # It:
 #   1. updates this repo itself (git pull, then re-runs from the fresh copy)
-#   2. clones/fast-forwards every dependency repo the installer pulls
+#   2. clones/fast-forwards every dependency repo the installer pulls:
+#      clinical-obs-forms, eregister_concepts_release_v1,
+#      implementer-interface-release, standard-config-ls, bahmni-docker-ls,
+#      dhisconnector_mappings_v1, openmrs-v1-modules — and the site's own
+#      upgrade-to-v1 checkout
 #   3. reinstalls the generated helper scripts from the current release
 #   4. checks both scheduled jobs (repo auto-pull, daily clinical form import)
 #      and installs whichever is missing
@@ -37,7 +41,8 @@
 # USAGE
 #   curl -fsSL <raw>/catch-up.sh | bash
 #   ./catch-up.sh [--yes] [--no-stack] [--no-forms] [--no-concepts]
-#                 [--no-recreate] [--install-dir DIR] [--no-color] [--help]
+#                 [--no-recreate] [--force-repos] [--install-dir DIR]
+#                 [--no-color] [--help]
 #
 #   -y, --yes        Non-interactive; assume "yes" at every prompt.
 #   --no-stack       Do not fast-forward bahmni-docker-ls (the compose files the
@@ -47,6 +52,12 @@
 #   --no-recreate    Do NOT recreate the EMR service at the end. Nothing then
 #                    touches a running container, but the refreshed config,
 #                    omods and forms are not loaded until it is restarted.
+#   --force-repos    Update dependency repos even when they have uncommitted
+#                    local changes or sit on a branch other than the one this
+#                    release pins, DISCARDING those changes (git reset --hard /
+#                    checkout -f). Without it such a repo is reported and left
+#                    exactly as it is — hand-edited site config is never thrown
+#                    away behind your back.
 #   --install-dir DIR  Install base (default /var/lib) -> <base>/v1/...
 #
 # ENV
@@ -60,11 +71,13 @@
 #   EREGISTER_CATCHUP_STACK_REPO=0    same as --no-stack
 #   EREGISTER_CATCHUP_DB_CHECK=0      skip the concept-count query
 #   EREGISTER_CATCHUP_RECREATE=0      same as --no-recreate
+#   EREGISTER_CATCHUP_FORCE_REPOS=1   same as --force-repos
 #   EREGISTER_EMR_SERVICE             compose service to recreate (default openmrs)
 #   EREGISTER_CATCHUP_HTTP_TIMEOUT    seconds per health probe (default 15)
 #
 # A repo with uncommitted local changes is reported and left completely alone —
-# hand-edited site config is never discarded.
+# hand-edited site config is never discarded. Pass --force-repos to override
+# that and bring every repo onto its pinned ref regardless.
 ###############################################################################
 
 set -euo pipefail
@@ -100,6 +113,10 @@ EREGISTER_MODULES=(
 # The path may not exist yet (we are often about to create it), so the
 # writability test walks up to its nearest existing ancestor — testing the
 # not-yet-created path itself would always say "no" and reach for sudo.
+# Phase-1 git, with the same ownership guard the modules use (see git_here in
+# lib/upgrade/verify.sh): the checkout may well be root-owned while you are not.
+boot_git() { git -c safe.directory='*' "$@"; }
+
 boot_root() {
   local probe="${1:-/}"; shift
   while [ -n "$probe" ] && [ "$probe" != "/" ] && [ ! -e "$probe" ]; do
@@ -153,28 +170,32 @@ self_update() {
   [ -n "$self" ] && [ -f "$self" ] && self_dir="$(cd "$(dirname "$self")" && pwd)"
 
   # --- case 1: we are inside a checkout ------------------------------------
-  if [ -n "$self_dir" ] && top="$(git -C "$self_dir" rev-parse --show-toplevel 2>/dev/null)"; then
-    if [ -n "$(git -C "$top" status --porcelain 2>/dev/null)" ]; then
+  if [ -n "$self_dir" ] && top="$(boot_git -C "$self_dir" rev-parse --show-toplevel 2>/dev/null)"; then
+    if [ -n "$(boot_git -C "$top" status --porcelain 2>/dev/null)" ]; then
       export EREGISTER_CATCHUP_SELF_STATUS="SKIP"
+      export EREGISTER_CATCHUP_SELF_DIR="$top"
       export EREGISTER_CATCHUP_SELF_DETAIL="checkout ${top} has local changes — not updated"
       printf 'Local checkout has uncommitted changes; skipping self-update.\n' >&2
       return 0
     fi
-    before="$(git -C "$top" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+    before="$(boot_git -C "$top" rev-parse --short HEAD 2>/dev/null || echo unknown)"
     printf 'Updating this checkout (%s) …\n' "$top" >&2
-    if boot_root "$top" git -C "$top" pull --ff-only >/dev/null 2>&1; then
-      after="$(git -C "$top" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+    if boot_root "$top" git -c safe.directory='*' -C "$top" pull --ff-only >/dev/null 2>&1; then
+      after="$(boot_git -C "$top" rev-parse --short HEAD 2>/dev/null || echo unknown)"
       if [ "$before" = "$after" ]; then
         export EREGISTER_CATCHUP_SELF_STATUS="OK"
+        export EREGISTER_CATCHUP_SELF_DIR="$top"
         export EREGISTER_CATCHUP_SELF_DETAIL="already current (${top} @ ${after})"
         return 0
       fi
       export EREGISTER_CATCHUP_SELF_STATUS="FIXED"
+      export EREGISTER_CATCHUP_SELF_DIR="$top"
       export EREGISTER_CATCHUP_SELF_DETAIL="${before} -> ${after} (${top})"
       printf 'Updated %s -> %s; restarting with the new copy.\n' "$before" "$after" >&2
       EREGISTER_CATCHUP_REEXEC=1 exec bash "${top}/catch-up.sh" "$@"
     fi
     export EREGISTER_CATCHUP_SELF_STATUS="GAP"
+    export EREGISTER_CATCHUP_SELF_DIR="$top"
     export EREGISTER_CATCHUP_SELF_DETAIL="git pull failed in ${top} — running the copy that is here"
     printf 'WARNING: could not update %s; continuing with the current copy.\n' "$top" >&2
     return 0
@@ -183,11 +204,12 @@ self_update() {
   # --- case 2: piped, or run from outside a checkout ------------------------
   managed="$(boot_repo_dir "$@")"
   if [ -d "${managed}/.git" ]; then
-    before="$(git -C "$managed" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+    before="$(boot_git -C "$managed" rev-parse --short HEAD 2>/dev/null || echo unknown)"
     printf 'Updating the managed checkout (%s) …\n' "$managed" >&2
-    boot_root "$managed" git -C "$managed" fetch --depth 1 origin "$EREGISTER_UPGRADE_REF" >/dev/null 2>&1 || true
-    boot_root "$managed" git -C "$managed" reset --hard "origin/${EREGISTER_UPGRADE_REF}" >/dev/null 2>&1 || true
-    after="$(git -C "$managed" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+    boot_root "$managed" git -c safe.directory='*' -C "$managed" fetch --depth 1 origin "$EREGISTER_UPGRADE_REF" >/dev/null 2>&1 || true
+    boot_root "$managed" git -c safe.directory='*' -C "$managed" reset --hard "origin/${EREGISTER_UPGRADE_REF}" >/dev/null 2>&1 || true
+    after="$(boot_git -C "$managed" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+    export EREGISTER_CATCHUP_SELF_DIR="$managed"
     if [ "$before" = "$after" ]; then
       export EREGISTER_CATCHUP_SELF_STATUS="OK"
       export EREGISTER_CATCHUP_SELF_DETAIL="already current (${managed} @ ${after})"
@@ -201,7 +223,8 @@ self_update() {
     if boot_root "$(dirname "$managed")" git clone --depth 1 --branch "$EREGISTER_UPGRADE_REF" \
          "$EREGISTER_UPGRADE_REPO" "$managed" >/dev/null 2>&1; then
       export EREGISTER_CATCHUP_SELF_STATUS="FIXED"
-      export EREGISTER_CATCHUP_SELF_DETAIL="cloned to ${managed} @ $(git -C "$managed" rev-parse --short HEAD 2>/dev/null)"
+      export EREGISTER_CATCHUP_SELF_DIR="$managed"
+      export EREGISTER_CATCHUP_SELF_DETAIL="cloned to ${managed} @ $(boot_git -C "$managed" rev-parse --short HEAD 2>/dev/null)"
     else
       export EREGISTER_CATCHUP_SELF_STATUS="GAP"
       export EREGISTER_CATCHUP_SELF_DETAIL="could not clone ${EREGISTER_UPGRADE_REPO} — modules fetched over HTTP instead"
@@ -415,6 +438,7 @@ parse_catchup_args() {
       --no-stack)     CATCHUP_STACK_REPO="0" ;;
       --no-forms)     IMPORT_FORMS="0" ;;
       --no-recreate)  CATCHUP_RECREATE_EMR="0" ;;
+      --force-repos)  CATCHUP_FORCE_REPOS="1" ;;
       --no-concepts)  CATCHUP_DB_CHECK="0" ;;
       --install-dir)  INSTALL_BASE="${2:?--install-dir needs a value}"; shift ;;
       --no-color)     USE_COLOR="no" ;;

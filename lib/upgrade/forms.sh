@@ -171,6 +171,10 @@ HEADER
 
 log() { printf '%s %s\n' "$(date '+%Y-%m-%dT%H:%M:%S%z')" "$*" >>"$LOG"; }
 
+# See autopull's copy: the clone may be owned by root or by the operator, and
+# git refuses a repo owned by "someone else" unless told otherwise.
+git_here() { git -c safe.directory='*' "$@"; }
+
 mkdir -p "$(dirname "$LOG")" "$WORKDIR" 2>/dev/null || true
 log "=== form import run start (pid $$) ==="
 
@@ -193,14 +197,19 @@ fi
 # (same fetch + fast-forward) and keeps this job useful on its own. A dirty
 # tree or a detached HEAD is left alone — never clobber local work.
 if [ "$SELF_PULL" = "1" ] && [ -d "$FORMS_DIR/.git" ]; then
-  branch="$(git -C "$FORMS_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || echo HEAD)"
-  if [ "$branch" = "HEAD" ]; then
+  if ! branch="$(git_here -C "$FORMS_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null)"; then
+    log "SKIP  refresh (git cannot read $FORMS_DIR — ownership or permissions)"
+    branch=""
+  fi
+  if [ -z "$branch" ]; then
+    :
+  elif [ "$branch" = "HEAD" ]; then
     log "SKIP  refresh ($FORMS_DIR is on a detached HEAD)"
-  elif [ -n "$(git -C "$FORMS_DIR" status --porcelain 2>/dev/null)" ]; then
+  elif [ -n "$(git_here -C "$FORMS_DIR" status --porcelain 2>/dev/null)" ]; then
     log "SKIP  refresh ($FORMS_DIR has uncommitted local changes)"
-  elif git -C "$FORMS_DIR" fetch --depth 1 origin "$branch" >>"$LOG" 2>&1 &&
-       git -C "$FORMS_DIR" reset --hard "origin/$branch" >>"$LOG" 2>&1; then
-    log "OK    refreshed $FORMS_DIR ($branch @ $(git -C "$FORMS_DIR" rev-parse --short HEAD 2>/dev/null))"
+  elif git_here -C "$FORMS_DIR" fetch --depth 1 origin "$branch" >>"$LOG" 2>&1 &&
+       git_here -C "$FORMS_DIR" reset --hard "origin/$branch" >>"$LOG" 2>&1; then
+    log "OK    refreshed $FORMS_DIR ($branch @ $(git_here -C "$FORMS_DIR" rev-parse --short HEAD 2>/dev/null))"
   else
     log "WARN  could not refresh $FORMS_DIR — importing what is on disk"
   fi

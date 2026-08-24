@@ -67,9 +67,14 @@ _cu_row() {  # _cu_row <status> <category> <name> <detail>
 #          effect on the site's next `docker compose up -d`
 #   pinned the 0.92 config kept beside the backup — historical, restore-only,
 #          so it is checked for presence but never fast-forwarded
+#   self   this repo's checkout on the site. Phase 1 (catch-up.sh) already
+#          updated whichever checkout the running script came from; this row
+#          exists so the SITE's managed checkout is kept current too, even when
+#          the run was started from a developer clone somewhere else.
 # -----------------------------------------------------------------------------
 catchup_expected_repos() {
   printf '%s\n' \
+    "upgrade-to-v1|${REPO_UPGRADE}|${UPGRADE_REPO_DIR}|${REF_UPGRADE}|self" \
     "bahmni-docker-ls|${REPO_BAHMNI_DOCKER}|${V1_DIR}/bahmni-docker-ls|${REF_BAHMNI_DOCKER}|stack" \
     "standard-config-ls|${REPO_STANDARD_CONFIG}|${V1_DIR}/standard-config-ls|${REF_STANDARD_CONFIG}|asset" \
     "openmrs-v1-modules|${REPO_OPENMRS_MODULES}|${V1_DIR}/openmrs-v1-modules|${REF_OPENMRS_MODULES}|asset" \
@@ -89,12 +94,24 @@ catchup_expected_repos() {
 # script could plausibly do.
 # -----------------------------------------------------------------------------
 _cu_update_repo() { # _cu_update_repo <name> <url> <dir> <ref> <class>
-  local name="$1" url="$2" dir="$3" ref="$4" class="$5" branch before after
+  local name="$1" url="$2" dir="$3" ref="$4" class="$5" branch before after origin note=""
+
+  # Phase 1 already pulled the checkout the running script came from. Only skip
+  # this row when that checkout IS this directory — otherwise the site's own
+  # copy still needs updating, which is the whole point of listing it here.
+  if [ "$class" = "self" ] && [ "${EREGISTER_CATCHUP_SELF_DIR:-}" = "$dir" ]; then
+    return 0
+  fi
+
+  if [ -d "$dir" ] && [ ! -d "${dir}/.git" ]; then
+    _cu_row GAP repo "$name" "${dir} exists but is not a git checkout — move it aside and re-run"
+    return 0
+  fi
 
   if [ ! -d "${dir}/.git" ]; then
     info "Missing clone: ${name} -> ${dir}"
     if git_clone_or_update "$url" "$dir" "$ref"; then
-      _cu_row FIXED repo "$name" "cloned @ $(as_root git -C "$dir" rev-parse --short HEAD 2>/dev/null)"
+      _cu_row FIXED repo "$name" "cloned @ $(git_here -C "$dir" rev-parse --short HEAD 2>/dev/null)"
     else
       _cu_row GAP repo "$name" "clone FAILED from ${url}"
     fi
@@ -106,37 +123,74 @@ _cu_update_repo() { # _cu_update_repo <name> <url> <dir> <ref> <class>
     return 0
   fi
   if [ "$class" = "stack" ] && [ "$CATCHUP_STACK_REPO" != "1" ]; then
-    _cu_row SKIP repo "$name" "left at $(as_root git -C "$dir" rev-parse --short HEAD 2>/dev/null) (--no-stack)"
+    _cu_row SKIP repo "$name" "left at $(git_here -C "$dir" rev-parse --short HEAD 2>/dev/null) (--no-stack)"
     return 0
   fi
 
-  if [ -n "$(as_root git -C "$dir" status --porcelain 2>/dev/null)" ]; then
-    _cu_row SKIP repo "$name" "uncommitted local changes — left untouched"
-    return 0
+  # A clone may point at a different remote than this release configures — a
+  # fork, or an older URL. Note it now, but do NOT re-point it yet: if the repo
+  # turns out to be off-release below, re-pointing without also moving the ref
+  # would leave it tracking a branch its new origin may not even have.
+  origin="$(git_here -C "$dir" remote get-url origin 2>/dev/null || echo '')"
+  if [ -n "$origin" ] && [ "$origin" != "$url" ]; then
+    note=" [origin is ${origin}, release expects ${url}]"
   fi
 
-  branch="$(as_root git -C "$dir" rev-parse --abbrev-ref HEAD 2>/dev/null || echo HEAD)"
-  [ "$branch" = "HEAD" ] && branch="$ref"
+  branch="$(git_here -C "$dir" rev-parse --abbrev-ref HEAD 2>/dev/null || echo HEAD)"
+
+  # Dirty tree, detached HEAD, or a branch other than the one this release pins:
+  # all three mean a plain fast-forward is either unsafe or would leave the repo
+  # off-release. --force-repos resolves them the way the installer would.
+  if [ -n "$(git_here -C "$dir" status --porcelain 2>/dev/null)" ] \
+     || [ "$branch" = "HEAD" ] || { [ -n "$ref" ] && [ "$branch" != "$ref" ]; }; then
+    local why
+    if [ -n "$(git_here -C "$dir" status --porcelain 2>/dev/null)" ]; then
+      why="uncommitted local changes"
+    elif [ "$branch" = "HEAD" ]; then
+      why="detached HEAD"
+    else
+      why="on branch '${branch}', release pins '${ref}'"
+    fi
+    if [ "$CATCHUP_FORCE_REPOS" = "1" ]; then
+      before="$(git_here -C "$dir" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+      if git_clone_or_update "$url" "$dir" "$ref" >/dev/null 2>&1; then
+        after="$(git_here -C "$dir" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+        _cu_row FIXED repo "$name" "forced onto ${ref} ${before} -> ${after} (was: ${why})${note}"
+      else
+        _cu_row GAP repo "$name" "forced update onto ${ref} FAILED (${why})${note}"
+      fi
+      return 0
+    fi
+    _cu_row SKIP repo "$name" "${why} — left untouched; --force-repos to reset it onto ${ref}${note}"
+    return 0
+  fi
   # Every capture below carries its own fallback: this runs under `set -e` with
   # pipefail, where a bare `x="$(cmd)"` that fails would abort the whole script.
-  before="$(as_root git -C "$dir" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+  before="$(git_here -C "$dir" rev-parse --short HEAD 2>/dev/null || echo unknown)"
 
-  if ! as_root git -C "$dir" fetch --depth 1 origin "$branch" >/dev/null 2>&1; then
+  # Safe here: clean tree, on the pinned ref. git_clone_or_update does the same
+  # thing on the forced path.
+  if [ -n "$origin" ] && [ "$origin" != "$url" ]; then
+    git_here -C "$dir" remote set-url origin "$url" >/dev/null 2>&1 \
+      && note=" (origin re-pointed from ${origin})"
+  fi
+
+  if ! git_here -C "$dir" fetch --depth 1 origin "$branch" >/dev/null 2>&1; then
     _cu_row GAP repo "$name" "fetch failed (offline? branch '${branch}' gone?) — still at ${before}"
     return 0
   fi
-  if ! as_root git -C "$dir" reset --hard "origin/${branch}" >/dev/null 2>&1; then
+  if ! git_here -C "$dir" reset --hard "origin/${branch}" >/dev/null 2>&1; then
     _cu_row GAP repo "$name" "could not fast-forward onto origin/${branch}"
     return 0
   fi
-  after="$(as_root git -C "$dir" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+  after="$(git_here -C "$dir" rev-parse --short HEAD 2>/dev/null || echo unknown)"
 
   if [ "$before" = "$after" ]; then
-    _cu_row OK repo "$name" "current (${branch} @ ${after})"
+    _cu_row OK repo "$name" "current (${branch} @ ${after})${note}"
   elif [ "$class" = "stack" ]; then
-    _cu_row FIXED repo "$name" "${branch} ${before} -> ${after} — needs 'docker compose up -d' to take effect"
+    _cu_row FIXED repo "$name" "${branch} ${before} -> ${after}${note} — needs 'docker compose up -d' to take effect"
   else
-    _cu_row FIXED repo "$name" "${branch} ${before} -> ${after}"
+    _cu_row FIXED repo "$name" "${branch} ${before} -> ${after}${note}"
   fi
 }
 

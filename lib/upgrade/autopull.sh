@@ -67,6 +67,13 @@ HEADER
 
 log() { printf '%s %s\n' "$(date '+%Y-%m-%dT%H:%M:%S%z')" "$*" >>"$LOG"; }
 
+# Clones under the install base may be owned by root or by the operator,
+# depending on how the installer was run. git refuses a repo it thinks belongs
+# to someone else ("detected dubious ownership"), which for a root-run cron job
+# means every command below fails and nothing ever updates. safe.directory=*
+# relaxes only that ownership check; file permissions still apply.
+git_here() { git -c safe.directory='*' "$@"; }
+
 mkdir -p "$(dirname "$LOG")" 2>/dev/null || true
 log "=== auto-pull run start (pid $$) ==="
 
@@ -76,24 +83,31 @@ for repo in "${REPOS[@]}"; do
     log "SKIP  $repo (not a git repo)"
     continue
   fi
-  branch="$(git -C "$repo" rev-parse --abbrev-ref HEAD 2>/dev/null || echo HEAD)"
+  if ! branch="$(git_here -C "$repo" rev-parse --abbrev-ref HEAD 2>/dev/null)"; then
+    # Told apart from a detached HEAD on purpose: this one is a permissions or
+    # ownership problem, and saying "detached HEAD" would send you hunting for
+    # the wrong thing.
+    log "SKIP  $repo (git cannot read it — ownership or permissions; run as root)"
+    rc=1
+    continue
+  fi
   if [ "$branch" = "HEAD" ]; then
     log "SKIP  $repo (detached HEAD; no branch to track)"
     continue
   fi
-  if [ -n "$(git -C "$repo" status --porcelain 2>/dev/null)" ]; then
+  if [ -n "$(git_here -C "$repo" status --porcelain 2>/dev/null)" ]; then
     log "SKIP  $repo (uncommitted local changes; left untouched)"
     rc=1
     continue
   fi
-  if ! git -C "$repo" fetch --depth 1 origin "$branch" >>"$LOG" 2>&1; then
+  if ! git_here -C "$repo" fetch --depth 1 origin "$branch" >>"$LOG" 2>&1; then
     log "ERROR $repo fetch failed"
     rc=1
     continue
   fi
-  before="$(git -C "$repo" rev-parse --short HEAD 2>/dev/null)"
-  if git -C "$repo" reset --hard "origin/$branch" >>"$LOG" 2>&1; then
-    after="$(git -C "$repo" rev-parse --short HEAD 2>/dev/null)"
+  before="$(git_here -C "$repo" rev-parse --short HEAD 2>/dev/null)"
+  if git_here -C "$repo" reset --hard "origin/$branch" >>"$LOG" 2>&1; then
+    after="$(git_here -C "$repo" rev-parse --short HEAD 2>/dev/null)"
     if [ "$before" = "$after" ]; then
       log "OK    $repo already current ($branch @ $after)"
     else
