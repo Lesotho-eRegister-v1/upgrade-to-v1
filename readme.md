@@ -113,13 +113,76 @@ exactly the tables the file touches are dumped to
 `/var/lib/v1/bahmni-backup/concepts-preimport-<timestamp>.sql`; feed that file
 back the same way to undo the import.
 
-Re-run it on its own at any time (for example after the auto-pull job pulls a
-newer dictionary):
+Re-run it on its own at any time:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Lesotho-eRegister-v1/upgrade-to-v1/refs/heads/main/import-concepts.sh | bash
 ```
 (or, from the upgrade repo: `bash ./import-concepts.sh`)
+
+## Which dump gets imported
+
+The repo names every release after the moment it was taken —
+`run_concept_dump.sh` writes `omrs_concept_dictionary_$(date +%Y%m%d_%H%M%S).sql`
+— so there is **no fixed filename**: today's is
+`omrs_concept_dictionary_20260804.sql`, and the next release lands beside it
+under a new name. The importer therefore takes the **newest file matching
+`omrs_concept_dictionary*.sql`** (names sort chronologically). Pin one exact
+file with `EREGISTER_CONCEPTS_SQL_NAME`, or change the pattern with
+`EREGISTER_CONCEPTS_SQL_PATTERN`.
+
+## The daily concept-dictionary job
+
+Its own job, separate from the daily form import and independent of it. One run:
+
+1. fast-forwards `/var/lib/v1/eregister_concepts_release_v1`;
+2. picks the newest `omrs_concept_dictionary_*.sql` in it;
+3. **imports it only if its content changed** — the sha256 of the dump that was
+   imported is recorded in `/var/lib/v1/.eregister_concept_import_state`, so a
+   nightly run on an unchanged dictionary does nothing at all;
+4. logs that the EMR needs a restart before the new dictionary is visible
+   (OpenMRS caches concepts).
+
+| Path | What it is |
+| --- | --- |
+| `/usr/local/bin/eregister-concept-import.sh` | the runner cron/systemd calls |
+| `eregister-concept-import.timer` or `/etc/cron.d/eregister-concept-import` | the daily schedule (04:30) |
+| `/var/lib/v1/.eregister_concept_import_state` | sha256 + filename + date of the last import |
+| `/var/log/eregister-concept-import.log` | every run |
+
+The runner does the cheap parts itself (refresh, pick, compare) and hands the
+import to `import-concepts.sh` from the site's own checkout, so the pre-import
+backup, the DB wait and the import itself live in one place rather than being
+copied into a generated file. Detection is on **content**, not filename: a
+re-published dump under the same name is imported, an unchanged one is not.
+
+Install it (the installer offers it automatically at the end of an upgrade):
+
+```bash
+sudo ./import-concepts.sh --schedule
+sudo /usr/local/bin/eregister-concept-import.sh    # run one check now
+```
+
+Tune it with `EREGISTER_CONCEPT_IMPORT=0` (do not install the job),
+`EREGISTER_CONCEPT_IMPORT_CRON` (default `30 4 * * *`),
+`EREGISTER_CONCEPT_IMPORT_ONCALENDAR` (default `*-*-* 04:30:00`),
+`EREGISTER_CONCEPT_IMPORT_SELF_PULL=0` (import what is on disk, no refresh).
+
+> [!WARNING]
+> **The EMR restart is not automatic.** OpenMRS caches concepts, so an imported
+> dictionary stays invisible until `openmrs` restarts — 30+ minutes of downtime,
+> which the job will not take unattended. It logs a `NOTE` instead, and
+> `catch-up.sh` recreates the service at the end of its run. Set
+> `EREGISTER_CONCEPT_IMPORT_RESTART_EMR=1` if you want the job to restart the
+> EMR itself after an import.
+
+The three scheduled jobs are deliberately independent, and run in this order:
+
+| Job | Schedule | Does |
+| --- | --- | --- |
+| `eregister-autopull` | 02:30 | fast-forwards the six asset/config repos |
+| `eregister-form-import` | 03:30 | deploys changed clinical forms |
+| `eregister-concept-import` | 04:30 | imports a changed concept dictionary |
 
 OpenMRS caches concepts, so restart the EMR service afterwards for the new
 dictionary to show up:
@@ -297,15 +360,20 @@ What it does, in order:
    `bahmni-form-import.sh`, `eregister-form-import.sh` — from the release that
    was just pulled. An existing `/etc/eregister/form-import.env` is never
    overwritten; a missing one is written after prompting for the password.
-4. **Checks both scheduled jobs** (`eregister-autopull`, `eregister-form-import`)
-   and installs whichever is absent, as a systemd timer or an `/etc/cron.d`
-   entry. Hosts with neither get the exact cron line to add by hand.
+4. **Checks all three scheduled jobs** (`eregister-autopull`,
+   `eregister-form-import`, `eregister-concept-import`) and installs whichever
+   is absent, as a systemd timer or an `/etc/cron.d` entry. Hosts with neither
+   get the exact cron line to add by hand.
 5. **Runs the clinical form import** — only forms whose content changed are
    deployed, so on a current site this is a no-op.
-6. **Reports on the concept dictionary** — dump size/date and the live
-   `concept` row count. It never imports it: that replaces the `concept_*` and
-   `drug*` tables, which is a maintenance-window decision. Run
-   `./import-concepts.sh` deliberately when you want it.
+6. **Reports on the concept dictionary** — which dump is on disk, whether it is
+   the one actually imported (comparing its sha256 against the import marker),
+   and the live `concept` row count. Catch-up never imports it itself: that
+   replaces the `concept_*`/`drug*` tables, which is the daily concept job's
+   business, or yours via `./import-concepts.sh`. The severity of the
+   `imported` row follows from that — a newer dump **with** the job scheduled is
+   `OK` (pending tonight); the same dump with **no** job scheduled is a `GAP`,
+   because then nothing will ever load it.
 7. **Reports service health** — `docker compose ps` per service plus HTTP
    probes of the OpenMRS REST API and the Bahmni UI. This is the site **as
    found**, probed before the reload below.
@@ -336,6 +404,7 @@ Then it prints one table:
   ⟳ FIXED script    eregister-form-import.sh         was missing — installed
   ⟳ FIXED cron      eregister-form-import            installed — systemd timer active, next: Tue 03:30
   ✔ OK    forms     import                           imported 0/12 form(s), 12 unchanged, 0 failed
+  ✔ OK    concepts  imported                         newer dump pending — daily job loads it (30 4 * * *); in the DB now: omrs_concept_dictionary_20260804.sql from 2026-06-14T09:12:03Z
   ✔ OK    concepts  database                         openmrs.concept holds 412345 rows
   ✘ GAP   service   reports                          exited — Exited (1) 2 hours ago
   ✔ OK    endpoint  openmrs REST                     https://localhost/openmrs — HTTP 200
@@ -351,12 +420,14 @@ no `GAP` rows, so it can be wired into monitoring:
 ```
 
 Flags: `--yes`, `--no-recreate`, `--force-repos`, `--no-stack`, `--no-forms`,
-`--no-concepts` (skips the DB count), `--install-dir DIR`, `--no-color`. Env: `EREGISTER_BAHMNI_PASS` (needed
+`--no-concepts` (leave the dictionary alone entirely — no DB probe, and the
+daily concept job is neither installed nor refreshed), `--install-dir DIR`,
+`--no-color`. Env: `EREGISTER_BAHMNI_PASS` (needed
 for `--yes` if the credentials file is missing), `EREGISTER_UPGRADE_REPO`,
 `EREGISTER_UPGRADE_REF`, `EREGISTER_CATCHUP_STACK_REPO=0`,
 `EREGISTER_CATCHUP_DB_CHECK=0`, `EREGISTER_CATCHUP_HTTP_TIMEOUT`,
 `EREGISTER_CATCHUP_RECREATE=0`, `EREGISTER_CATCHUP_FORCE_REPOS=1`,
-`EREGISTER_EMR_SERVICE`.
+`EREGISTER_EMR_SERVICE`, `EREGISTER_CONCEPT_IMPORT=0`.
 
 > [!WARNING]
 > The monitoring/cron use above should carry `--no-recreate`. Left on, every

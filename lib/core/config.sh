@@ -50,8 +50,15 @@ REPORTS_SERVICE="${EREGISTER_REPORTS_SERVICE:-reports}"
 # eregister_concepts_release_v1 clone is loaded into the 'openmrs' database of
 # the openmrsdb service. See lib/upgrade/concepts.sh.
 IMPORT_CONCEPTS="${EREGISTER_IMPORT_CONCEPTS:-1}"     # 0 (or --no-concepts) disables it
-# Filename of the dump inside the concepts repo.
-CONCEPTS_SQL_NAME="${EREGISTER_CONCEPTS_SQL_NAME:-omrs_concept_dictionary_v1.sql}"
+# Which dump inside the concepts repo to import. The repo's own tooling names
+# each release with a timestamp — run_concept_dump.sh writes
+# omrs_concept_dictionary_$(date +%Y%m%d_%H%M%S).sql — so there is no fixed
+# filename to pin: today's is omrs_concept_dictionary_20260804.sql, and the next
+# release lands beside it under a new name. Leave CONCEPTS_SQL_NAME EMPTY to
+# pick the newest file matching CONCEPTS_SQL_PATTERN (the normal case); set it
+# to pin one exact filename.
+CONCEPTS_SQL_NAME="${EREGISTER_CONCEPTS_SQL_NAME:-}"
+CONCEPTS_SQL_PATTERN="${EREGISTER_CONCEPTS_SQL_PATTERN:-omrs_concept_dictionary*.sql}"
 # How long to wait for openmrsdb to accept connections before giving up. The
 # import runs while the rest of the stack is still booting, so some slack here.
 CONCEPTS_DB_WAIT="${EREGISTER_CONCEPTS_DB_WAIT:-300}"
@@ -90,6 +97,29 @@ FORM_IMPORT_CRON="${EREGISTER_FORM_IMPORT_CRON:-30 3 * * *}"
 # importing, so the daily import still picks up new forms on a host where
 # auto-pull was declined. Set to 0 to import strictly what is on disk.
 FORM_IMPORT_SELF_PULL="${EREGISTER_FORM_IMPORT_SELF_PULL:-1}"
+
+# --- Scheduled concept-dictionary import ------------------------------------
+# A job of its own, separate from the daily form import: it keeps the
+# eregister_concepts_release_v1 clone current and imports the dump it holds into
+# the 'openmrs' database of the openmrsdb container — but only when the dump has
+# actually changed since the last import (sha256, recorded in
+# CONCEPT_IMPORT_STATE). See lib/upgrade/concepts.sh.
+CONCEPT_IMPORT="${EREGISTER_CONCEPT_IMPORT:-1}"       # 0 disables the job
+CONCEPT_IMPORT_RUNNER="${EREGISTER_CONCEPT_IMPORT_RUNNER:-/usr/local/bin/eregister-concept-import.sh}"
+CONCEPT_IMPORT_LOG="${EREGISTER_CONCEPT_IMPORT_LOG:-/var/log/eregister-concept-import.log}"
+CONCEPT_IMPORT_UNIT="${EREGISTER_CONCEPT_IMPORT_UNIT:-eregister-concept-import}"
+# Daily, after the auto-pull (02:30) and the form import (03:30) — the three
+# jobs are independent, but this order means each sees the night's fresh repos.
+CONCEPT_IMPORT_ONCALENDAR="${EREGISTER_CONCEPT_IMPORT_ONCALENDAR:-*-*-* 04:30:00}"
+CONCEPT_IMPORT_CRON="${EREGISTER_CONCEPT_IMPORT_CRON:-30 4 * * *}"
+# The runner refreshes the concepts clone itself before looking at it, so the job
+# still works on a host where auto-pull was declined. 0 = import what is on disk.
+CONCEPT_IMPORT_SELF_PULL="${EREGISTER_CONCEPT_IMPORT_SELF_PULL:-1}"
+# OpenMRS caches concepts, so a fresh dictionary is invisible until the EMR is
+# restarted. Off by default: that is 30+ minutes of downtime, which is not a
+# thing to do unattended without saying so. When 0, the log and the catch-up
+# report say a restart is pending.
+CONCEPT_IMPORT_RESTART_EMR="${EREGISTER_CONCEPT_IMPORT_RESTART_EMR:-0}"
 
 # --- Catch-up / reconcile (catch-up.sh) -------------------------------------
 # catch-up.sh re-checks everything install.sh is meant to have set up and redoes
@@ -185,6 +215,7 @@ FORMS_DIR=""          # <base>/v1/clinical-obs-forms  (the JSON form exports)
 FORM_IMPORT_STATE=""  # <base>/v1/.bahmni_form_import_state.json (per-form sha256+version)
 FORM_IMPORT_WORKDIR="" # <base>/v1/form-import  (importErrors.txt from unattended runs)
 UPGRADE_REPO_DIR=""   # <base>/v1/upgrade-to-v1  (this repo, kept current by catch-up.sh)
+CONCEPT_IMPORT_STATE="" # <base>/v1/.eregister_concept_import_state (sha256 of the imported dump)
 
 # Runtime state (for rollback) — touched as the upgrade progresses
 WORKDIR=""

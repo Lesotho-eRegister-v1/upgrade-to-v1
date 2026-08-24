@@ -14,7 +14,10 @@ parse_args() {
       --force)        FORCE="1" ;;
       --install-dir)  INSTALL_BASE="${2:?--install-dir needs a value}"; shift ;;
       --target-ref)   TARGET_REF="${2:?--target-ref needs a value}"; shift ;;
-      --no-concepts)  IMPORT_CONCEPTS="0" ;;
+      # Covers BOTH halves of "concepts": the one-shot import at the end of an
+      # upgrade and the daily job that keeps the dictionary current. Leaving the
+      # job behind after --no-concepts would be a surprise.
+      --no-concepts)  IMPORT_CONCEPTS="0"; CONCEPT_IMPORT="0" ;;
       --no-forms)     IMPORT_FORMS="0" ;;
       --no-color)     USE_COLOR="no" ;;
       -h|--help)      usage; exit 0 ;;
@@ -35,7 +38,11 @@ resolve_config() {
   DONE_MARKER="${V1_DIR}/.eregister-upgrade-complete"
   RESTORE_DIR="${V1_DIR}/bahmni-docker-ls/bahmni-standard"
   CONCEPTS_DIR="${V1_DIR}/eregister_concepts_release_v1"
-  CONCEPTS_SQL="${CONCEPTS_DIR}/${CONCEPTS_SQL_NAME}"
+  # Only a pinned name can be resolved this early; the usual case (newest
+  # timestamped dump) is resolved at use time by _concepts_resolve_sql, which
+  # has to look at the filesystem.
+  CONCEPTS_SQL="${CONCEPTS_SQL_NAME:+${CONCEPTS_DIR}/${CONCEPTS_SQL_NAME}}"
+  CONCEPT_IMPORT_STATE="${V1_DIR}/.eregister_concept_import_state"
   FORMS_DIR="${EREGISTER_FORMS_DIR:-${V1_DIR}/clinical-obs-forms}"
   # State and scratch deliberately sit in V1_DIR, NOT inside the clone: the
   # auto-pull job hard-resets clinical-obs-forms, and the record of what has
@@ -61,7 +68,8 @@ print_config() {
   ${C_DIM}Install base${C_RESET}   : ${INSTALL_BASE}
   ${C_DIM}v1 dir${C_RESET}         : ${V1_DIR}
   ${C_DIM}eRegister_HOME${C_RESET} : ${eRegister_HOME}
-  ${C_DIM}Concept import${C_RESET} : $( [ "$IMPORT_CONCEPTS" = "1" ] && echo "${CONCEPTS_SQL} -> ${DB_SERVICE}:${DB_NAME}" || echo "disabled (--no-concepts)" )
+  ${C_DIM}Concept import${C_RESET} : $( [ "$IMPORT_CONCEPTS" = "1" ] && echo "${CONCEPTS_SQL:-${CONCEPTS_DIR}/${CONCEPTS_SQL_PATTERN} (newest)} -> ${DB_SERVICE}:${DB_NAME}" || echo "disabled (--no-concepts)" )
+  ${C_DIM}Concept job${C_RESET}    : $( [ "$CONCEPT_IMPORT" = "1" ] && echo "daily ${CONCEPT_IMPORT_CRON} -> ${CONCEPT_IMPORT_RUNNER}" || echo "disabled" )
   ${C_DIM}Form import${C_RESET}    : $( [ "$IMPORT_FORMS" = "1" ] && echo "${FORMS_DIR} -> ${BAHMNI_URL} as '${BAHMNI_USER}' (daily: ${FORM_IMPORT_CRON})" || echo "disabled (--no-forms)" )
   ${C_DIM}Old stack${C_RESET}      : ${OLD_DOCKER_DIR}
   ${C_DIM}EMR container${C_RESET}  : ${EMR_CONTAINER}

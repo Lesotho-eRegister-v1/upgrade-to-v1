@@ -25,11 +25,15 @@
 # WHAT IT CHECKS / FIXES
 #   1. the repos install.sh clones          -> clone if missing, fast-forward if behind
 #   2. the generated helper scripts         -> rewritten from the current modules
-#   3. the scheduled jobs (auto-pull, forms) -> installed if absent
+#   3. the scheduled jobs (auto-pull, forms, concept dictionary)
+#                                           -> installed if absent
 #   4. the clinical form import             -> run (only changed forms deploy)
-#   5. the concept dictionary               -> reported, never auto-imported
-#      (it drops and recreates concept_*/drug* tables — far too blunt to do
-#      behind an operator's back; the report says how to run it)
+#   5. the concept dictionary               -> reported, never auto-imported.
+#      It drops and recreates the concept_*/drug* tables, which is too blunt to
+#      do behind an operator's back — and it no longer needs doing here: the
+#      daily concept job loads a changed dictionary on its own. What this
+#      reports is whether the dump on disk is the one in the database, and
+#      whether anything is scheduled to close that gap.
 #   6. running services + endpoints         -> reported (as found, pre-reload)
 #   7. the EMR service                      -> recreated last, so all of the
 #      above is actually loaded (skippable)
@@ -271,6 +275,24 @@ catchup_helper_scripts() {
   else
     _cu_row GAP script "$(basename "$FORM_IMPORT_RUNNER")" "could not be written"
   fi
+
+  # --- concept-dictionary runner (its own job, independent of forms) -------
+  if [ "${CONCEPT_IMPORT:-1}" = "1" ]; then
+    local had_crunner=0
+    [ -x "$CONCEPT_IMPORT_RUNNER" ] && had_crunner=1
+    if _concepts_ensure_toolkit >/dev/null 2>&1 && _concepts_write_runner >/dev/null 2>&1; then
+      if [ "$had_crunner" = "1" ]; then
+        _cu_row OK script "$(basename "$CONCEPT_IMPORT_RUNNER")" "present, refreshed from this release"
+      else
+        _cu_row FIXED script "$(basename "$CONCEPT_IMPORT_RUNNER")" "was missing — installed"
+      fi
+    else
+      _cu_row GAP script "$(basename "$CONCEPT_IMPORT_RUNNER")" "could not be installed"
+    fi
+  else
+    _cu_row SKIP script "$(basename "$CONCEPT_IMPORT_RUNNER")" "concept job disabled (EREGISTER_CONCEPT_IMPORT=0)"
+  fi
+
 }
 
 # -----------------------------------------------------------------------------
@@ -348,6 +370,28 @@ catchup_schedules() {
       _cu_row GAP cron "$FORM_IMPORT_UNIT" "not scheduled (declined)"
     fi
   fi
+
+  # --- daily concept-dictionary import -------------------------------------
+  if [ "${CONCEPT_IMPORT:-1}" != "1" ]; then
+    _cu_row SKIP cron "$CONCEPT_IMPORT_UNIT" "disabled (EREGISTER_CONCEPT_IMPORT=0)"
+  elif state="$(_cu_schedule_state "$CONCEPT_IMPORT_UNIT")"; then
+    _cu_row OK cron "$CONCEPT_IMPORT_UNIT" "$state"
+  elif [ ! -x "$CONCEPT_IMPORT_RUNNER" ]; then
+    _cu_row GAP cron "$CONCEPT_IMPORT_UNIT" "not scheduled (its runner is missing)"
+  elif ! _cu_scheduler_available; then
+    _cu_row GAP cron "$CONCEPT_IMPORT_UNIT" "no systemd and no /etc/cron.d — schedule '${CONCEPT_IMPORT_CRON} ${CONCEPT_IMPORT_RUNNER}' by hand"
+  else
+    warn "The daily concept-dictionary import is not scheduled on this host."
+    if confirm "Install the daily concept-import schedule (${CONCEPT_IMPORT_CRON})?"; then
+      if _concepts_schedule >/dev/null 2>&1 && state="$(_cu_schedule_state "$CONCEPT_IMPORT_UNIT")"; then
+        _cu_row FIXED cron "$CONCEPT_IMPORT_UNIT" "installed — ${state}"
+      else
+        _cu_row GAP cron "$CONCEPT_IMPORT_UNIT" "installation failed"
+      fi
+    else
+      _cu_row GAP cron "$CONCEPT_IMPORT_UNIT" "not scheduled (declined)"
+    fi
+  fi
 }
 
 # -----------------------------------------------------------------------------
@@ -396,19 +440,59 @@ catchup_forms() {
 
 # -----------------------------------------------------------------------------
 # catchup_concepts — REPORT ONLY.
-# Importing the dictionary drops and recreates the concept_*/drug* tables. That
-# is a maintenance-window operation on a live site, so this only says what is
-# there and how to run it deliberately.
+#
+# Importing drops and recreates the concept_*/drug* tables, so catch-up does not
+# do it. The daily concept job does, when the dump changes. The severity of the
+# "imported" row therefore depends on whether that job is actually scheduled:
+# a newer dump with the job in place is simply pending (OK), while the same dump
+# with no job is a real gap that needs a human.
 # -----------------------------------------------------------------------------
 catchup_concepts() {
   step "Concept dictionary (report only)"
   local count=""
 
-  if [ ! -f "$CONCEPTS_SQL" ]; then
-    _cu_row GAP concepts "dump" "not found at ${CONCEPTS_SQL}"
+  # --no-concepts means "leave the dictionary alone", so it silences these rows
+  # too. Reporting a GAP that tells you to run the job you just disabled would
+  # be noise, and it would fail the exit code for a state you chose.
+  if [ "${CONCEPT_IMPORT:-1}" != "1" ]; then
+    _cu_row SKIP concepts "dictionary" "left alone (--no-concepts)"
     return 0
   fi
-  _cu_row OK concepts "dump" "$(as_root du -h "$CONCEPTS_SQL" 2>/dev/null | awk '{print $1}'), updated $(as_root date -r "$CONCEPTS_SQL" '+%Y-%m-%d' 2>/dev/null || echo '?')"
+
+  if ! _concepts_resolve_sql >/dev/null 2>&1 || [ ! -f "$CONCEPTS_SQL" ]; then
+    _cu_row GAP concepts "dump" "no ${CONCEPTS_SQL_PATTERN} in ${CONCEPTS_DIR}"
+    return 0
+  fi
+  _cu_row OK concepts "dump" "$(basename "$CONCEPTS_SQL") ($(as_root du -h "$CONCEPTS_SQL" 2>/dev/null | awk '{print $1}'))"
+
+  # The question the old report could not answer: is what is on disk what is in
+  # the database? The nightly pull brings new dictionaries in silently, so a
+  # site can sit on a stale one indefinitely while every other row reads OK.
+  local disk_hash prev_hash prev_file prev_when
+  disk_hash="$(_concepts_hash "$CONCEPTS_SQL" 2>/dev/null | awk '{print $1}')"
+  prev_hash="$(_concepts_state_get sha256)"
+  prev_file="$(_concepts_state_get file)"
+  prev_when="$(_concepts_state_get imported_at)"
+  # Is anything scheduled to act on a stale dictionary? That decides whether a
+  # newer dump is "pending" or "stuck".
+  local job_state="" job_ok=0
+  if [ "${CONCEPT_IMPORT:-1}" = "1" ] && job_state="$(_cu_schedule_state "$CONCEPT_IMPORT_UNIT")"; then
+    job_ok=1
+  fi
+
+  if [ -z "$prev_hash" ]; then
+    if [ "$job_ok" = "1" ]; then
+      _cu_row OK concepts "imported" "no import recorded yet — the daily job loads it (${CONCEPT_IMPORT_CRON})"
+    else
+      _cu_row GAP concepts "imported" "no import recorded and no job scheduled — run ${CONCEPT_IMPORT_RUNNER} (or ./import-concepts.sh)"
+    fi
+  elif [ "$prev_hash" = "$disk_hash" ]; then
+    _cu_row OK concepts "imported" "${prev_file:-?} is the dump in the database (imported ${prev_when:-?})"
+  elif [ "$job_ok" = "1" ]; then
+    _cu_row OK concepts "imported" "newer dump pending — daily job loads it (${CONCEPT_IMPORT_CRON}); in the DB now: ${prev_file:-?} from ${prev_when:-?}"
+  else
+    _cu_row GAP concepts "imported" "dump on disk is NEWER than the one imported (${prev_file:-?} on ${prev_when:-?}) and NO job is scheduled — run ${CONCEPT_IMPORT_RUNNER}"
+  fi
 
   if [ "$CATCHUP_DB_CHECK" != "1" ]; then
     _cu_row SKIP concepts "database" "DB check disabled (EREGISTER_CATCHUP_DB_CHECK=0)"
@@ -595,8 +679,11 @@ catchup_report() {
   update needs it, apply that during a maintenance window:
       cd ${RESTORE_DIR} && ${DOCKER_COMPOSE:-docker compose} up -d
 
-  Concept dictionary (replaces concept_*/drug* tables — deliberate, not automatic):
-      ${UPGRADE_REPO_DIR}/import-concepts.sh
+  Concept dictionary — handled by its own daily job (${CONCEPT_IMPORT_CRON}):
+      check now:   sudo ${CONCEPT_IMPORT_RUNNER}
+      log:         ${CONCEPT_IMPORT_LOG}
+      by hand:     ${UPGRADE_REPO_DIR}/import-concepts.sh
+    An imported dictionary is only visible after ${EMR_SERVICE} restarts.
 
   Run the form import by hand:   sudo ${FORM_IMPORT_RUNNER}
   Run the repo sync by hand:     sudo ${AUTO_PULL_SCRIPT}

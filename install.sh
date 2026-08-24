@@ -23,7 +23,8 @@
 #                        name, so a list is usually what you want:
 #                          --target-ref Bokang-changes,main
 #                        Default: empty (each repo uses its own default ref).
-#   --no-concepts        Skip the post-install concept-dictionary import.
+#   --no-concepts        Skip the post-install concept-dictionary import AND the
+#                        daily concept-import job.
 #   --no-forms           Skip the post-install clinical form import (and its
 #                        daily job).
 #   --no-color           Disable ANSI colors.
@@ -34,10 +35,23 @@
 #   into the 'openmrs' database of the openmrsdb container. It replaces the
 #   concept_*/drug* tables, so the tables it touches are dumped to
 #   <base>/v1/bahmni-backup/concepts-preimport-<stamp>.sql first. Control it:
-#     EREGISTER_IMPORT_CONCEPTS=0      Skip it (same as --no-concepts).
+#     EREGISTER_IMPORT_CONCEPTS=0      Skip the import (--no-concepts skips the
+#                                      daily job as well; this variable does not).
 #     EREGISTER_CONCEPTS_SQL_NAME      Dump filename inside the concepts repo.
 #     EREGISTER_CONCEPTS_DB_WAIT       Seconds to wait for openmrsdb (default 300).
 #   Re-run it on its own at any time with ./import-concepts.sh.
+#
+#   The installer then offers a DAILY job of its own for the dictionary —
+#   separate from the form import: it fast-forwards eregister_concepts_release_v1
+#   and imports the newest omrs_concept_dictionary_*.sql it holds into the
+#   openmrs database, but only when that dump's content differs from the one
+#   already loaded (sha256, recorded in <base>/v1/.eregister_concept_import_state).
+#   Runner: /usr/local/bin/eregister-concept-import.sh. Control it:
+#     EREGISTER_CONCEPT_IMPORT=0            Do not install the job.
+#     EREGISTER_CONCEPT_IMPORT_CRON         cron schedule (default '30 4 * * *').
+#     EREGISTER_CONCEPT_IMPORT_ONCALENDAR   systemd OnCalendar (default '*-*-* 04:30:00').
+#     EREGISTER_CONCEPT_IMPORT_RESTART_EMR=1  restart the EMR after an import
+#                                           (off by default: 30+ min downtime).
 #
 #   After the concept dictionary is in place, the clinical observation forms
 #   shipped in the clinical-obs-forms clone are imported into the running EMR
@@ -407,6 +421,13 @@ main() {
   # Needs only openmrsdb, which is up well before the EMR finishes booting.
   if ! import_concepts; then
     warn "Concept dictionary NOT imported. Run it again later with: ./import-concepts.sh"
+  fi
+
+  # Keep it current from here on: its own daily job, independent of the form
+  # import, that pulls the concepts repo and imports a dump only when the
+  # dictionary has actually changed.
+  if ! install_concept_import; then
+    warn "Scheduled concept import NOT installed. Add it later with: ./import-concepts.sh --schedule"
   fi
 
   # --- import the clinical observation forms (optional, post-completion) --

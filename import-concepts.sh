@@ -17,7 +17,17 @@
 #
 # USAGE
 #   ./import-concepts.sh [--yes] [--install-dir DIR] [--no-color] [--help]
+#   ./import-concepts.sh --schedule        # install the DAILY job instead of
+#                                          # importing now (see below)
 #   curl -fsSL <raw>/import-concepts.sh | bash
+#
+# THE SCHEDULED JOB
+#   --schedule installs /usr/local/bin/eregister-concept-import.sh and a daily
+#   systemd timer (or /etc/cron.d entry) that, in one run: fast-forwards the
+#   eregister_concepts_release_v1 clone, picks the newest
+#   omrs_concept_dictionary_*.sql in it, and imports it into the 'openmrs'
+#   database — but only when that dump differs from the one already loaded.
+#   It is independent of the daily clinical form import.
 #
 # ENV
 #   EREGISTER_INSTALL_BASE     install base (default /var/lib) -> <base>/v1/...
@@ -41,6 +51,8 @@ EREGISTER_MODULES=(
   core/prompt.sh
   core/cli.sh
   system/privilege.sh
+  upgrade/verify.sh      # git_clone_or_update, for the runner's toolkit checkout
+  upgrade/autopull.sh    # has_systemd
   upgrade/concepts.sh
 )
 
@@ -238,13 +250,28 @@ cleanup() { [ -n "${BOOTSTRAP_DIR:-}" ] && rm -rf "$BOOTSTRAP_DIR"; return 0; }
 main() {
   load_modules
   trap cleanup EXIT
-  parse_args "$@"
+  # cli.sh's parser does not know --schedule (see main), so keep it away from it.
+  local args=()
+  for a in "$@"; do [ "$a" = "--schedule" ] || args+=("$a"); done
+  parse_args ${args[@]+"${args[@]}"}
   setup_colors
   resolve_config       # sets RESTORE_DIR / CONCEPTS_SQL from INSTALL_BASE
   detect_privilege     # sets SUDO for as_root
   # --no-concepts is meaningless here (running this script IS the import), so
   # ignore the config default and always attempt it.
   IMPORT_CONCEPTS="1"
+
+  # --schedule installs the daily job instead of importing right now. Parsed
+  # here rather than in cli.sh: it is meaningful only for this script.
+  local a
+  for a in "$@"; do
+    if [ "$a" = "--schedule" ]; then
+      install_concept_import || exit 1
+      success "Done."
+      return 0
+    fi
+  done
+
   import_concepts
   success "Done."
 }

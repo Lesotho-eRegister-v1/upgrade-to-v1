@@ -26,10 +26,12 @@
 #      dhisconnector_mappings_v1, openmrs-v1-modules — and the site's own
 #      upgrade-to-v1 checkout
 #   3. reinstalls the generated helper scripts from the current release
-#   4. checks both scheduled jobs (repo auto-pull, daily clinical form import)
-#      and installs whichever is missing
+#   4. checks all THREE scheduled jobs (repo auto-pull, daily clinical form
+#      import, daily concept-dictionary import) and installs whichever is missing
 #   5. runs the form import (only forms whose content changed are deployed)
-#   6. reports on the concept dictionary — never imports it automatically
+#   6. reports on the concept dictionary: which dump is on disk, and whether it
+#      is the one actually imported. Catch-up never imports it itself — that is
+#      the daily concept job's business (or ./import-concepts.sh by hand)
 #   7. reports the health of the running services and endpoints (as found)
 #   8. recreates the EMR service, last, so the refreshed config/omods/forms are
 #      loaded — skip with --no-recreate
@@ -48,7 +50,9 @@
 #   --no-stack       Do not fast-forward bahmni-docker-ls (the compose files the
 #                    running stack reads). Everything else is still updated.
 #   --no-forms       Leave the clinical form import and its schedule alone.
-#   --no-concepts    Leave the concept-dictionary rows out of the report.
+#   --no-concepts    Leave the concept dictionary alone: skip the concept-count
+#                    query, and neither install nor refresh the daily
+#                    concept-import job.
 #   --no-recreate    Do NOT recreate the EMR service at the end. Nothing then
 #                    touches a running container, but the refreshed config,
 #                    omods and forms are not loaded until it is restarted.
@@ -71,6 +75,8 @@
 #   EREGISTER_CATCHUP_STACK_REPO=0    same as --no-stack
 #   EREGISTER_CATCHUP_DB_CHECK=0      skip the concept-count query
 #   EREGISTER_CATCHUP_RECREATE=0      same as --no-recreate
+#   EREGISTER_CONCEPT_IMPORT=0        do not install/refresh the concept job
+#   EREGISTER_CONCEPT_IMPORT_CRON     its schedule (default '30 4 * * *')
 #   EREGISTER_CATCHUP_FORCE_REPOS=1   same as --force-repos
 #   EREGISTER_EMR_SERVICE             compose service to recreate (default openmrs)
 #   EREGISTER_CATCHUP_HTTP_TIMEOUT    seconds per health probe (default 15)
@@ -439,7 +445,9 @@ parse_catchup_args() {
       --no-forms)     IMPORT_FORMS="0" ;;
       --no-recreate)  CATCHUP_RECREATE_EMR="0" ;;
       --force-repos)  CATCHUP_FORCE_REPOS="1" ;;
-      --no-concepts)  CATCHUP_DB_CHECK="0" ;;
+      # Same meaning as in install.sh: leave the concept dictionary alone —
+       # no DB probe, and do not install or refresh its daily job.
+      --no-concepts)  CATCHUP_DB_CHECK="0"; CONCEPT_IMPORT="0" ;;
       --install-dir)  INSTALL_BASE="${2:?--install-dir needs a value}"; shift ;;
       --no-color)     USE_COLOR="no" ;;
       -h|--help)      usage; exit 0 ;;
