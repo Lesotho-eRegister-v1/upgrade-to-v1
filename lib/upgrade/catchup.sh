@@ -1,0 +1,577 @@
+# shellcheck shell=bash
+# =============================================================================
+# lib/upgrade/catchup.sh — reconcile a deployed site with what install.sh is
+# currently meant to have set up, and redo only the parts that are missing or
+# out of date.
+#
+# WHY THIS EXISTS
+#   The installer keeps gaining steps (asset repos, the concept dictionary, the
+#   auto-pull job, the daily clinical form import). Sites installed from an
+#   earlier version never got those steps, and re-running install.sh on them is
+#   the wrong tool: it freezes the old stack, restores a backup and restarts
+#   everything. This module does the opposite — it is a read-mostly reconcile
+#   that fixes gaps in place.
+#
+# WHAT IT MAY TOUCH
+#   Every check is read-only (`docker compose ps`), every git update is a
+#   fast-forward, and a repo with local changes is never reset. Exactly ONE step
+#   acts on a running container, and it is the last one: catchup_recreate_emr
+#   recreates the EMR service (--force-recreate --renew-anon-volumes) so the
+#   refreshed config, omods and forms are actually loaded. That costs the EMR's
+#   30+ minute boot, so it is confirmed and can be skipped with --no-recreate.
+#   Changes to the stack repo itself still only ever get REPORTED — bringing the
+#   whole compose project up is left for the site's maintenance window.
+#
+# WHAT IT CHECKS / FIXES
+#   1. the repos install.sh clones          -> clone if missing, fast-forward if behind
+#   2. the generated helper scripts         -> rewritten from the current modules
+#   3. the scheduled jobs (auto-pull, forms) -> installed if absent
+#   4. the clinical form import             -> run (only changed forms deploy)
+#   5. the concept dictionary               -> reported, never auto-imported
+#      (it drops and recreates concept_*/drug* tables — far too blunt to do
+#      behind an operator's back; the report says how to run it)
+#   6. running services + endpoints         -> reported (as found, pre-reload)
+#   7. the EMR service                      -> recreated last, so all of the
+#      above is actually loaded (skippable)
+#
+# The updating of THIS repo happens before the module is even sourced — see
+# catch-up.sh, which pulls the checkout and re-execs itself from it.
+#
+# Depends on: logging, prompt (confirm), as_root() (privilege),
+#             git_clone_or_update() (verify), has_systemd() + auto-pull
+#             installers (autopull), the form installers (forms).
+# =============================================================================
+
+# Report rows, collected as "STATUS|CATEGORY|NAME|DETAIL" and rendered at the
+# end by catchup_report. STATUS is one of:
+#   OK    already in place and current
+#   FIXED this run created or updated it
+#   SKIP  deliberately left alone (local changes, disabled by a flag)
+#   GAP   still missing or unhealthy — needs a human
+CATCHUP_ROWS=()
+CATCHUP_GAPS=0
+CATCHUP_EMR_RECREATED=0   # set by catchup_recreate_emr, read by the report
+
+_cu_row() {  # _cu_row <status> <category> <name> <detail>
+  CATCHUP_ROWS+=("$1|$2|$3|$4")
+  [ "$1" = "GAP" ] && CATCHUP_GAPS=$(( CATCHUP_GAPS + 1 ))
+  return 0
+}
+
+# -----------------------------------------------------------------------------
+# catchup_expected_repos — every repo install.sh clones, as
+# "name|url|dir|ref|class" lines. class is:
+#   asset  content that keeps changing after deployment (always updated)
+#   stack  bahmni-docker-ls — compose files a running stack reads; updating it
+#          is gated on CATCHUP_STACK_REPO because the new files only take
+#          effect on the site's next `docker compose up -d`
+#   pinned the 0.92 config kept beside the backup — historical, restore-only,
+#          so it is checked for presence but never fast-forwarded
+# -----------------------------------------------------------------------------
+catchup_expected_repos() {
+  printf '%s\n' \
+    "bahmni-docker-ls|${REPO_BAHMNI_DOCKER}|${V1_DIR}/bahmni-docker-ls|${REF_BAHMNI_DOCKER}|stack" \
+    "standard-config-ls|${REPO_STANDARD_CONFIG}|${V1_DIR}/standard-config-ls|${REF_STANDARD_CONFIG}|asset" \
+    "openmrs-v1-modules|${REPO_OPENMRS_MODULES}|${V1_DIR}/openmrs-v1-modules|${REF_OPENMRS_MODULES}|asset" \
+    "implementer-interface-release|${REPO_IMPL_INTERFACE}|${V1_DIR}/implementer-interface-release|${REF_IMPL_INTERFACE}|asset" \
+    "clinical-obs-forms|${REPO_OBS_FORMS}|${V1_DIR}/clinical-obs-forms|${REF_OBS_FORMS}|asset" \
+    "dhisconnector_mappings_v1|${REPO_DHIS_MAPPINGS}|${V1_DIR}/dhisconnector_mappings_v1|${REF_DHIS_MAPPINGS}|asset" \
+    "eregister_concepts_release_v1|${REPO_CONCEPTS}|${V1_DIR}/eregister_concepts_release_v1|${REF_CONCEPTS}|asset" \
+    "bahmni_config (0.92)|${REPO_CONFIG_092}|${BACKUP_DIR}/bahmni_config|${REF_CONFIG_092}|pinned"
+}
+
+# -----------------------------------------------------------------------------
+# _cu_update_repo — bring one clone up to date, or make it in the first place.
+#
+# Same contract as the auto-pull job, deliberately: a repo with uncommitted
+# local changes is REPORTED and left completely alone. Sites do hand-edit
+# config, and silently discarding that would be the one destructive thing this
+# script could plausibly do.
+# -----------------------------------------------------------------------------
+_cu_update_repo() { # _cu_update_repo <name> <url> <dir> <ref> <class>
+  local name="$1" url="$2" dir="$3" ref="$4" class="$5" branch before after
+
+  if [ ! -d "${dir}/.git" ]; then
+    info "Missing clone: ${name} -> ${dir}"
+    if git_clone_or_update "$url" "$dir" "$ref"; then
+      _cu_row FIXED repo "$name" "cloned @ $(as_root git -C "$dir" rev-parse --short HEAD 2>/dev/null)"
+    else
+      _cu_row GAP repo "$name" "clone FAILED from ${url}"
+    fi
+    return 0
+  fi
+
+  if [ "$class" = "pinned" ]; then
+    _cu_row OK repo "$name" "present (pinned to the deployed release; not updated)"
+    return 0
+  fi
+  if [ "$class" = "stack" ] && [ "$CATCHUP_STACK_REPO" != "1" ]; then
+    _cu_row SKIP repo "$name" "left at $(as_root git -C "$dir" rev-parse --short HEAD 2>/dev/null) (--no-stack)"
+    return 0
+  fi
+
+  if [ -n "$(as_root git -C "$dir" status --porcelain 2>/dev/null)" ]; then
+    _cu_row SKIP repo "$name" "uncommitted local changes — left untouched"
+    return 0
+  fi
+
+  branch="$(as_root git -C "$dir" rev-parse --abbrev-ref HEAD 2>/dev/null || echo HEAD)"
+  [ "$branch" = "HEAD" ] && branch="$ref"
+  # Every capture below carries its own fallback: this runs under `set -e` with
+  # pipefail, where a bare `x="$(cmd)"` that fails would abort the whole script.
+  before="$(as_root git -C "$dir" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+
+  if ! as_root git -C "$dir" fetch --depth 1 origin "$branch" >/dev/null 2>&1; then
+    _cu_row GAP repo "$name" "fetch failed (offline? branch '${branch}' gone?) — still at ${before}"
+    return 0
+  fi
+  if ! as_root git -C "$dir" reset --hard "origin/${branch}" >/dev/null 2>&1; then
+    _cu_row GAP repo "$name" "could not fast-forward onto origin/${branch}"
+    return 0
+  fi
+  after="$(as_root git -C "$dir" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+
+  if [ "$before" = "$after" ]; then
+    _cu_row OK repo "$name" "current (${branch} @ ${after})"
+  elif [ "$class" = "stack" ]; then
+    _cu_row FIXED repo "$name" "${branch} ${before} -> ${after} — needs 'docker compose up -d' to take effect"
+  else
+    _cu_row FIXED repo "$name" "${branch} ${before} -> ${after}"
+  fi
+}
+
+catchup_repos() {
+  step "Dependency repos"
+  local line name url dir ref class
+  while IFS= read -r line; do
+    IFS='|' read -r name url dir ref class <<<"$line"
+    _cu_update_repo "$name" "$url" "$dir" "$ref" "$class"
+  done < <(catchup_expected_repos)
+}
+
+# -----------------------------------------------------------------------------
+# catchup_helper_scripts — rewrite the generated helpers from the modules that
+# were just pulled. They are generated files, so rewriting is how a site picks
+# up fixes to them; doing it unconditionally keeps the check trivial and the
+# result identical to a fresh install.
+# -----------------------------------------------------------------------------
+catchup_helper_scripts() {
+  step "Installed helper scripts"
+
+  # --- auto-pull updater ---------------------------------------------------
+  if [ "$AUTO_PULL" = "1" ]; then
+    local had_updater=0
+    [ -x "$AUTO_PULL_SCRIPT" ] && had_updater=1
+    if write_updater_script >/dev/null 2>&1; then
+      if [ "$had_updater" = "1" ]; then
+        _cu_row OK script "$(basename "$AUTO_PULL_SCRIPT")" "present, refreshed from this release"
+      else
+        _cu_row FIXED script "$(basename "$AUTO_PULL_SCRIPT")" "was missing — installed"
+      fi
+    else
+      _cu_row GAP script "$(basename "$AUTO_PULL_SCRIPT")" "could not be written"
+    fi
+  else
+    _cu_row SKIP script "$(basename "$AUTO_PULL_SCRIPT")" "auto-pull disabled (EREGISTER_AUTO_PULL=0)"
+  fi
+
+  [ "$IMPORT_FORMS" = "1" ] || {
+    _cu_row SKIP script "form importer" "form import disabled (--no-forms)"
+    return 0
+  }
+
+  # --- form importer + its runner -----------------------------------------
+  local had_importer=0
+  [ -x "$FORM_IMPORT_SCRIPT" ] && had_importer=1
+  if _forms_install_importer >/dev/null 2>&1; then
+    if [ "$had_importer" = "1" ]; then
+      _cu_row OK script "$(basename "$FORM_IMPORT_SCRIPT")" "present, refreshed from this release"
+    else
+      _cu_row FIXED script "$(basename "$FORM_IMPORT_SCRIPT")" "was missing — installed"
+    fi
+  else
+    _cu_row GAP script "$(basename "$FORM_IMPORT_SCRIPT")" "could not be installed"
+    return 0
+  fi
+
+  # --- credentials for the unattended runs ---------------------------------
+  # Never overwrite a working env file: the password in it is the one the site
+  # actually uses, and this script may be running without any password at hand.
+  if as_root test -s "$FORM_IMPORT_ENV"; then
+    _cu_row OK config "$(basename "$FORM_IMPORT_ENV")" "present (left as-is)"
+  elif _forms_prompt_credentials; then
+    _forms_write_env >/dev/null 2>&1
+    _cu_row FIXED config "$(basename "$FORM_IMPORT_ENV")" "was missing — written for ${BAHMNI_USER}@${BAHMNI_URL}"
+  else
+    _cu_row GAP config "$(basename "$FORM_IMPORT_ENV")" "missing and no password given — the daily form import cannot run"
+  fi
+
+  local had_runner=0
+  [ -x "$FORM_IMPORT_RUNNER" ] && had_runner=1
+  if _forms_write_runner >/dev/null 2>&1; then
+    if [ "$had_runner" = "1" ]; then
+      _cu_row OK script "$(basename "$FORM_IMPORT_RUNNER")" "present, refreshed from this release"
+    else
+      _cu_row FIXED script "$(basename "$FORM_IMPORT_RUNNER")" "was missing — installed"
+    fi
+  else
+    _cu_row GAP script "$(basename "$FORM_IMPORT_RUNNER")" "could not be written"
+  fi
+}
+
+# -----------------------------------------------------------------------------
+# _cu_schedule_state — how a unit is scheduled on this host, as a short string
+# on stdout; non-zero when it is not scheduled at all.
+# -----------------------------------------------------------------------------
+_cu_schedule_state() { # _cu_schedule_state <unit-basename>
+  local unit="$1" next=""
+  if has_systemd && as_root systemctl list-unit-files "${unit}.timer" >/dev/null 2>&1 \
+     && as_root systemctl is-enabled "${unit}.timer" >/dev/null 2>&1; then
+    next="$(as_root systemctl list-timers --all --no-pager "${unit}.timer" 2>/dev/null \
+            | awk 'NR==2 {print $1, $2, $3}' || true)"
+    printf 'systemd timer %s, next: %s' \
+      "$(as_root systemctl is-active "${unit}.timer" 2>/dev/null || echo inactive)" \
+      "${next:-unknown}"
+    return 0
+  fi
+  if [ -f "/etc/cron.d/${unit}" ]; then
+    printf 'cron: %s' "$(as_root awk '$0 !~ /^#|^$|^[A-Z]+=/ {print $1, $2, $3, $4, $5; exit}' "/etc/cron.d/${unit}")"
+    return 0
+  fi
+  return 1
+}
+
+# _cu_scheduler_available — does this host have anything to schedule WITH?
+# Told apart from a failed install so the report can say which it was.
+_cu_scheduler_available() { has_systemd || [ -d /etc/cron.d ]; }
+
+# -----------------------------------------------------------------------------
+# catchup_schedules — the point of the whole exercise for an early site: make
+# sure both scheduled jobs exist, and install the missing one.
+# -----------------------------------------------------------------------------
+catchup_schedules() {
+  step "Scheduled jobs"
+  local state
+
+  # --- nightly repo auto-pull ---------------------------------------------
+  if [ "$AUTO_PULL" != "1" ]; then
+    _cu_row SKIP cron "$AUTO_PULL_UNIT" "disabled (EREGISTER_AUTO_PULL=0)"
+  elif state="$(_cu_schedule_state "$AUTO_PULL_UNIT")"; then
+    _cu_row OK cron "$AUTO_PULL_UNIT" "$state"
+  elif ! _cu_scheduler_available; then
+    _cu_row GAP cron "$AUTO_PULL_UNIT" "no systemd and no /etc/cron.d — schedule '${AUTO_PULL_CRON} ${AUTO_PULL_SCRIPT}' by hand"
+  else
+    warn "The repo auto-pull job is not scheduled on this host."
+    if confirm "Install the auto-pull schedule (${AUTO_PULL_CRON})?"; then
+      if install_auto_pull >/dev/null 2>&1 && state="$(_cu_schedule_state "$AUTO_PULL_UNIT")"; then
+        _cu_row FIXED cron "$AUTO_PULL_UNIT" "installed — ${state}"
+      else
+        _cu_row GAP cron "$AUTO_PULL_UNIT" "installation failed"
+      fi
+    else
+      _cu_row GAP cron "$AUTO_PULL_UNIT" "not scheduled (declined)"
+    fi
+  fi
+
+  # --- daily clinical form import -----------------------------------------
+  if [ "$IMPORT_FORMS" != "1" ]; then
+    _cu_row SKIP cron "$FORM_IMPORT_UNIT" "disabled (--no-forms)"
+  elif state="$(_cu_schedule_state "$FORM_IMPORT_UNIT")"; then
+    _cu_row OK cron "$FORM_IMPORT_UNIT" "$state"
+  elif [ ! -x "$FORM_IMPORT_RUNNER" ]; then
+    _cu_row GAP cron "$FORM_IMPORT_UNIT" "not scheduled (its runner is missing)"
+  elif ! _cu_scheduler_available; then
+    _cu_row GAP cron "$FORM_IMPORT_UNIT" "no systemd and no /etc/cron.d — schedule '${FORM_IMPORT_CRON} ${FORM_IMPORT_RUNNER}' by hand"
+  else
+    warn "The daily clinical form import is not scheduled on this host."
+    if confirm "Install the daily form-import schedule (${FORM_IMPORT_CRON})?"; then
+      if _forms_schedule >/dev/null 2>&1 && state="$(_cu_schedule_state "$FORM_IMPORT_UNIT")"; then
+        _cu_row FIXED cron "$FORM_IMPORT_UNIT" "installed — ${state}"
+      else
+        _cu_row GAP cron "$FORM_IMPORT_UNIT" "installation failed"
+      fi
+    else
+      _cu_row GAP cron "$FORM_IMPORT_UNIT" "not scheduled (declined)"
+    fi
+  fi
+}
+
+# -----------------------------------------------------------------------------
+# catchup_forms — run the form import once, now. Cheap and safe to repeat: the
+# importer deploys only the forms whose content changed since the last run, and
+# a changed form goes out as a NEW version, so nothing live is overwritten.
+# -----------------------------------------------------------------------------
+catchup_forms() {
+  step "Clinical observation forms"
+
+  if [ "$IMPORT_FORMS" != "1" ]; then
+    _cu_row SKIP forms "import" "disabled (--no-forms)"
+    return 0
+  fi
+  if [ ! -x "$FORM_IMPORT_RUNNER" ] || ! as_root test -s "$FORM_IMPORT_ENV"; then
+    _cu_row GAP forms "import" "not runnable (missing runner or credentials)"
+    return 0
+  fi
+
+  local deployed=0
+  if as_root test -s "$FORM_IMPORT_STATE" && command -v jq >/dev/null 2>&1; then
+    deployed="$(as_root cat "$FORM_IMPORT_STATE" 2>/dev/null | jq 'length' 2>/dev/null || echo 0)"
+  fi
+  info "Forms recorded as deployed on this site so far: ${deployed}"
+  info "Concept resolution makes this slow — minutes per changed form. Unchanged forms are skipped."
+
+  if ! confirm "Run the form import now?"; then
+    _cu_row SKIP forms "import" "declined; the daily job still runs (${FORM_IMPORT_CRON})"
+    return 0
+  fi
+
+  if run_form_import; then
+    local summary
+    summary="$(as_root grep -E 'imported [0-9]+/' "$FORM_IMPORT_LOG" 2>/dev/null | tail -1 || true)"
+    # "imported 0/…" means every form was already current — that is an OK, not
+    # a FIXED: nothing on the site actually changed.
+    if [[ "$summary" == *"imported 0/"* ]]; then
+      _cu_row OK forms "import" "$summary"
+    else
+      _cu_row FIXED forms "import" "${summary:-completed}"
+    fi
+  else
+    _cu_row GAP forms "import" "run failed — see ${FORM_IMPORT_LOG}"
+  fi
+}
+
+# -----------------------------------------------------------------------------
+# catchup_concepts — REPORT ONLY.
+# Importing the dictionary drops and recreates the concept_*/drug* tables. That
+# is a maintenance-window operation on a live site, so this only says what is
+# there and how to run it deliberately.
+# -----------------------------------------------------------------------------
+catchup_concepts() {
+  step "Concept dictionary (report only)"
+  local count=""
+
+  if [ ! -f "$CONCEPTS_SQL" ]; then
+    _cu_row GAP concepts "dump" "not found at ${CONCEPTS_SQL}"
+    return 0
+  fi
+  _cu_row OK concepts "dump" "$(as_root du -h "$CONCEPTS_SQL" 2>/dev/null | awk '{print $1}'), updated $(as_root date -r "$CONCEPTS_SQL" '+%Y-%m-%d' 2>/dev/null || echo '?')"
+
+  if [ "$CATCHUP_DB_CHECK" != "1" ]; then
+    _cu_row SKIP concepts "database" "DB check disabled (EREGISTER_CATCHUP_DB_CHECK=0)"
+    return 0
+  fi
+  # Read-only probe through the same helper the importer uses.
+  if _concepts_resolve_compose >/dev/null 2>&1 && [ -n "${DOCKER_COMPOSE:-}" ] && [ -d "$RESTORE_DIR" ]; then
+    count="$(printf 'SELECT COUNT(*) FROM concept;\n' | _concepts_mysql -N 2>/dev/null | tr -d '[:space:]' || true)"
+  fi
+  if [[ "$count" =~ ^[0-9]+$ ]] && [ "$count" -gt 0 ]; then
+    _cu_row OK concepts "database" "${DB_NAME}.concept holds ${count} rows"
+  else
+    _cu_row GAP concepts "database" "could not read a concept count — import may never have run (./import-concepts.sh)"
+  fi
+}
+
+# -----------------------------------------------------------------------------
+# catchup_services — READ-ONLY health of the running stack.
+# `docker compose ps` and two HTTP probes; nothing is started or stopped.
+# -----------------------------------------------------------------------------
+catchup_services() {
+  step "Service health (read-only)"
+
+  if [ ! -d "$RESTORE_DIR" ]; then
+    _cu_row GAP services "stack" "no stack directory at ${RESTORE_DIR}"
+    return 0
+  fi
+  # Without this, an empty DOCKER_COMPOSE would turn `as_root $DOCKER_COMPOSE ps`
+  # into a plain `ps` and report the host's process list as the stack.
+  if ! _concepts_resolve_compose >/dev/null 2>&1 || [ -z "${DOCKER_COMPOSE:-}" ]; then
+    _cu_row GAP services "docker compose" "not available on this host — cannot read service health"
+    return 0
+  fi
+
+  local rows total=0 up=0 line name state status
+  rows="$( ( cd "$RESTORE_DIR" && as_root $DOCKER_COMPOSE ps --format '{{.Service}}|{{.State}}|{{.Status}}' 2>/dev/null ) || true )"
+
+  if [ -z "$rows" ]; then
+    # Older compose builds have no Go-template support for ps; fall back to the
+    # plain table so the operator still sees something real.
+    rows="$( ( cd "$RESTORE_DIR" && as_root $DOCKER_COMPOSE ps 2>/dev/null ) || true )"
+    if [ -n "$rows" ]; then
+      log "$rows"
+      _cu_row OK services "compose ps" "printed above (this compose build has no --format support)"
+    else
+      _cu_row GAP services "compose ps" "no containers found for the stack in ${RESTORE_DIR}"
+    fi
+    return 0
+  fi
+
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    IFS='|' read -r name state status <<<"$line"
+    total=$(( total + 1 ))
+    case "$state" in
+      running) up=$(( up + 1 )); [[ "$status" == *unhealthy* ]] && _cu_row GAP service "$name" "$status" ;;
+      *)       _cu_row GAP service "$name" "${state:-unknown} — ${status:-no status}" ;;
+    esac
+  done <<<"$rows"
+
+  if [ "$up" -eq "$total" ] && [ "$total" -gt 0 ]; then
+    _cu_row OK services "containers" "${up}/${total} running"
+  else
+    _cu_row GAP services "containers" "${up}/${total} running"
+  fi
+
+  # --- endpoints -----------------------------------------------------------
+  local code
+  code="$(curl -sk -o /dev/null -w '%{http_code}' --max-time "$CATCHUP_HTTP_TIMEOUT" \
+          "${BAHMNI_URL}/openmrs/ws/rest/v1/session" 2>/dev/null || echo 000)"
+  if [ "$code" = "200" ]; then
+    _cu_row OK endpoint "openmrs REST" "${BAHMNI_URL}/openmrs — HTTP 200"
+  else
+    _cu_row GAP endpoint "openmrs REST" "${BAHMNI_URL}/openmrs — HTTP ${code} (still booting? EMR needs 30+ min)"
+  fi
+  code="$(curl -sk -o /dev/null -w '%{http_code}' --max-time "$CATCHUP_HTTP_TIMEOUT" \
+          "${BAHMNI_URL}/bahmni/home/index.html" 2>/dev/null || echo 000)"
+  if [ "$code" = "200" ] || [ "$code" = "302" ]; then
+    _cu_row OK endpoint "bahmni UI" "${BAHMNI_URL}/bahmni — HTTP ${code}"
+  else
+    _cu_row GAP endpoint "bahmni UI" "${BAHMNI_URL}/bahmni — HTTP ${code}"
+  fi
+}
+
+# -----------------------------------------------------------------------------
+# catchup_recreate_emr — the LAST job: recreate the EMR service so everything
+# refreshed above is actually picked up.
+#
+#     docker compose up -d --force-recreate --renew-anon-volumes <EMR_SERVICE>
+#
+# Why it is needed: the steps before this update files on disk — standard-config,
+# the omods, the implementer interface, the forms. A long-running openmrs
+# container goes on serving what it read at boot, and anything seeded into an
+# ANONYMOUS volume when the container was first created keeps the old content
+# even across a plain restart. --force-recreate replaces the container and
+# --renew-anon-volumes throws its anonymous volumes away so they are re-seeded.
+#
+# THIS IS THE ONE PART OF CATCH-UP THAT TOUCHES A RUNNING CONTAINER:
+#   * the EMR is down until it finishes booting — normally 30+ minutes;
+#   * the openmrs service's anonymous volumes are discarded. Named volumes and
+#     the separate openmrsdb service (the patient data) are NOT touched, so this
+#     is not a data-loss operation — but anything a site hand-placed inside the
+#     running EMR container, rather than in its config repo, is gone.
+# Hence the confirm, the --no-recreate flag and EREGISTER_CATCHUP_RECREATE=0.
+# -----------------------------------------------------------------------------
+catchup_recreate_emr() {
+  step "Reloading the EMR service (${EMR_SERVICE})"
+
+  if [ "${CATCHUP_RECREATE_EMR:-1}" != "1" ]; then
+    _cu_row SKIP reload "$EMR_SERVICE" "not recreated (--no-recreate)"
+    return 0
+  fi
+  if [ ! -d "$RESTORE_DIR" ]; then
+    _cu_row GAP reload "$EMR_SERVICE" "no stack directory at ${RESTORE_DIR}"
+    return 0
+  fi
+  if ! _concepts_resolve_compose >/dev/null 2>&1 || [ -z "${DOCKER_COMPOSE:-}" ]; then
+    _cu_row GAP reload "$EMR_SERVICE" "docker compose not available on this host"
+    return 0
+  fi
+
+  warn "This RECREATES the '${EMR_SERVICE}' container so it picks up the refreshed"
+  warn "config, omods and forms, and renews its anonymous volumes."
+  warn "The EMR will be DOWN while it boots — normally 30+ minutes."
+  warn "Patient data (the ${DB_SERVICE} service and its named volumes) is not touched."
+  if ! confirm "Recreate '${EMR_SERVICE}' now?"; then
+    _cu_row SKIP reload "$EMR_SERVICE" "declined — run it yourself: cd ${RESTORE_DIR} && ${DOCKER_COMPOSE} up -d --force-recreate --renew-anon-volumes ${EMR_SERVICE}"
+    return 0
+  fi
+
+  info "Running: ${DOCKER_COMPOSE} up -d --force-recreate --renew-anon-volumes ${EMR_SERVICE}"
+  if ( cd "$RESTORE_DIR" && as_root $DOCKER_COMPOSE up -d --force-recreate --renew-anon-volumes "$EMR_SERVICE" ); then
+    _cu_row FIXED reload "$EMR_SERVICE" "recreated with renewed anonymous volumes — booting now"
+    success "'${EMR_SERVICE}' recreated. It is booting; give it 30+ minutes before use."
+    CATCHUP_EMR_RECREATED=1
+  else
+    _cu_row GAP reload "$EMR_SERVICE" "recreate FAILED — check '${DOCKER_COMPOSE} ps' and the service logs"
+    error "Could not recreate '${EMR_SERVICE}'."
+    return 1
+  fi
+}
+
+# -----------------------------------------------------------------------------
+# catchup_report — the whole point of the run: one table, then a verdict.
+# -----------------------------------------------------------------------------
+catchup_report() {
+  local row status kind name detail mark color
+  printf '\n%s══════════════════════════════════════════════════════════════%s\n' "$C_HDR" "$C_RESET" >&2
+  printf '%s eRegister v1 — catch-up report  (%s)%s\n' "$C_HDR" "$(date '+%Y-%m-%d %H:%M:%S %Z')" "$C_RESET" >&2
+  printf '%s══════════════════════════════════════════════════════════════%s\n\n' "$C_HDR" "$C_RESET" >&2
+
+  for row in "${CATCHUP_ROWS[@]}"; do
+    IFS='|' read -r status kind name detail <<<"$row"
+    case "$status" in
+      OK)    mark="✔"; color="$C_OK"   ;;
+      FIXED) mark="⟳"; color="$C_INFO" ;;
+      SKIP)  mark="—"; color="$C_DIM"  ;;
+      *)     mark="✘"; color="$C_ERR"  ;;
+    esac
+    printf '  %s%s %-5s%s %-9s %-32.32s %s\n' \
+      "$color" "$mark" "$status" "$C_RESET" "$kind" "$name" "$detail" >&2
+  done
+
+  printf '\n' >&2
+  info "OK = already current · FIXED = redone by this run · SKIP = left alone · GAP = needs attention"
+
+  if [ "$CATCHUP_GAPS" -eq 0 ]; then
+    success "No gaps: this site matches what the installer is meant to leave behind."
+  else
+    warn "${CATCHUP_GAPS} item(s) need attention — see the ✘ rows above."
+  fi
+
+  if [ "$CATCHUP_EMR_RECREATED" = "1" ]; then
+    notice "'${EMR_SERVICE}' was just recreated and is still booting. Give it 30+ minutes; the endpoint rows above were probed BEFORE the reload."
+  fi
+
+  local touched="Nothing here stopped or restarted a container."
+  [ "$CATCHUP_EMR_RECREATED" = "1" ] && \
+    touched="Apart from the '${EMR_SERVICE}' reload, nothing here stopped or restarted a container."
+
+  cat >&2 <<EOF
+
+  ${touched} If a repo row says a stack
+  update needs it, apply that during a maintenance window:
+      cd ${RESTORE_DIR} && ${DOCKER_COMPOSE:-docker compose} up -d
+
+  Concept dictionary (replaces concept_*/drug* tables — deliberate, not automatic):
+      ${UPGRADE_REPO_DIR}/import-concepts.sh
+
+  Run the form import by hand:   sudo ${FORM_IMPORT_RUNNER}
+  Run the repo sync by hand:     sudo ${AUTO_PULL_SCRIPT}
+  Logs:                          ${FORM_IMPORT_LOG}
+                                 ${AUTO_PULL_LOG}
+EOF
+}
+
+# -----------------------------------------------------------------------------
+# catch_up — orchestrator. Returns non-zero when gaps remain, so it can be used
+# as a monitoring check (`catch-up.sh --yes; echo $?`).
+# -----------------------------------------------------------------------------
+catch_up() {
+  # Phase 1 (updating this repo) happened in catch-up.sh before these modules
+  # even existed, so it hands its outcome over in the environment.
+  if [ -n "${EREGISTER_CATCHUP_SELF_STATUS:-}" ]; then
+    _cu_row "$EREGISTER_CATCHUP_SELF_STATUS" self "upgrade-to-v1" \
+            "${EREGISTER_CATCHUP_SELF_DETAIL:-}"
+  fi
+  catchup_repos
+  catchup_helper_scripts
+  catchup_schedules
+  catchup_forms
+  catchup_concepts
+  catchup_services      # health of the site AS FOUND, before anything is reloaded
+  # `|| true` because catch-up.sh runs under `set -e`: this is the only step
+  # that returns non-zero, and losing the report over it would be the worst
+  # possible moment to lose the report. The failure is already a GAP row.
+  catchup_recreate_emr || true   # last job: the EMR picks up everything above
+  catchup_report
+  [ "$CATCHUP_GAPS" -eq 0 ]
+}

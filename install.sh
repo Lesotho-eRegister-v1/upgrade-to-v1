@@ -73,6 +73,14 @@
 #   The standalone updater is installed to /usr/local/bin/eregister-autopull.sh
 #   and can be run by hand for a one-off sync.
 #
+#   ALREADY ON v1? Do not re-run this script to pick up changes made to it since
+#   your site was installed — it freezes the old stack, restores a backup and
+#   restarts everything. Run ./catch-up.sh instead: it reconciles a live site
+#   (repos, helper scripts, both scheduled jobs, the form import) and reports on
+#   service health. The only container it touches is the EMR service, which it
+#   recreates as its last job so the refreshed config/omods/forms are loaded
+#   (--no-recreate skips that); the rest of the stack is left running.
+#
 # DESIGN NOTES
 #   * Modules live under lib/, grouped by concern and sourced by this file:
 #       lib/core/    config, logging, traps, prompt, cli
@@ -80,10 +88,14 @@
 #       lib/upgrade/ verify, detect, backup, migrate, rollback, postinstall,
 #                    concepts, forms, autopull
 #     Override the lib location with EREGISTER_LIB_DIR (e.g. for system install).
-#   * Because functions now live in separate files, this is NO LONGER safe to
-#     `curl | bash` directly — clone/download the whole repo and run ./install.sh.
-#     (To regain a single pipe-able file, concatenate lib/**/*.sh + main; see
-#     the build note at the end of this repo's README.)
+#   * `curl | bash` still works: with no lib/ beside it, the script fetches the
+#     modules itself — first by shallow-cloning the repo (which also resolves
+#     the remote's default branch), then, failing that, file by file from
+#     EREGISTER_RAW_BASE. It only proceeds once EVERY module in the list is
+#     present, so a half-published branch is caught here with a message naming
+#     the missing file, not with curl's opaque "(56) … error: 404" mid-run.
+#     After adding or renaming anything under lib/ or bin/, PUSH IT, then run
+#     ./tests/check-published.sh — that is what the one-liners fetch.
 #   * ALL logic still lives in functions; main() is called on the LAST line.
 ###############################################################################
 
@@ -117,28 +129,166 @@ EREGISTER_MODULES=(
 )
 
 # -----------------------------------------------------------------------------
-# bootstrap_modules — download all modules into a temp dir when lib/ is absent.
-# Echoes the temp dir path on stdout; logs to stderr (loggers aren't loaded yet).
+# Module bootstrap — obtain lib/ when it isn't sitting next to this script
+# (only install.sh was downloaded, or the script was piped into bash).
+#
+# Two ways in, tried in this order:
+#   1. git clone --depth 1 of the repo. One request, always a self-consistent
+#      tree, and it resolves the remote's DEFAULT branch by itself — so it keeps
+#      working when the branch in EREGISTER_RAW_BASE is renamed or wrong.
+#   2. per-file download from the raw host, tried against each ref in
+#      EREGISTER_RAW_REFS.
+# Either way the tree is only accepted once EVERY required module is present, so
+# a half-published branch is rejected here instead of failing mid-upgrade.
+#
+# Why not a plain `curl -fsSL`: over HTTP/2, `curl -f` reports a missing file as
+#   curl: (56) The requested URL returned error: 404
+# which names neither the file nor the reason. Every download below checks the
+# HTTP status itself and says which URL returned what.
 # -----------------------------------------------------------------------------
-bootstrap_modules() {
-  local tmp m url
-  command -v curl >/dev/null 2>&1 || { printf 'FATAL: curl required to fetch modules.\n' >&2; return 1; }
-  tmp="$(mktemp -d "${TMPDIR:-/tmp}/eregister-lib.XXXXXX")" || return 1
-  printf 'lib/ not found locally — downloading modules from %s …\n' "$EREGISTER_RAW_BASE" >&2
+EREGISTER_REPO="${EREGISTER_REPO:-${EREGISTER_UPGRADE_REPO:-https://github.com/Lesotho-eRegister-v1/upgrade-to-v1}}"
+# Branches tried when a module is missing from the configured one. Ordered.
+EREGISTER_RAW_REFS="${EREGISTER_RAW_REFS:-main,master}"
+# Set when the caller pinned a raw base explicitly; then it is used verbatim and
+# no other ref is guessed.
+_BOOT_RAW_BASE_PINNED="${EREGISTER_RAW_BASE_PINNED:-0}"
+# Every attempt is logged for the failure message. It goes to a FILE, not an
+# array: the try-functions below run inside $( ) to hand back the directory they
+# found, and a subshell's variables die with it — a file survives.
+_BOOT_TRIED_FILE=""
+
+_boot_log()   { printf '%s\n' "$*" >&2; }
+_boot_tried() { [ -n "$_BOOT_TRIED_FILE" ] && printf '%s\n' "$*" >>"$_BOOT_TRIED_FILE"; return 0; }
+
+# _boot_raw_base <ref> — the raw URL prefix for one ref, derived from
+# EREGISTER_REPO. Empty when the repo isn't on github.com (self-hosted git):
+# there is nothing to derive, so only the configured EREGISTER_RAW_BASE is used.
+_boot_raw_base() {
+  local ref="$1" path="${EREGISTER_REPO%.git}"
+  case "$path" in
+    https://github.com/*) printf 'https://raw.githubusercontent.com/%s/refs/heads/%s' \
+                                 "${path#https://github.com/}" "$ref" ;;
+    *) printf '' ;;
+  esac
+}
+
+# _boot_have_all <dir> — is every required module readable under <dir>?
+# Echoes the first missing one on stdout when it isn't.
+_boot_have_all() {
+  local dir="$1" m
   for m in "${EREGISTER_MODULES[@]}"; do
-    mkdir -p "${tmp}/$(dirname "$m")"
-    url="${EREGISTER_RAW_BASE}/lib/${m}"
-    if ! curl -fsSL "$url" -o "${tmp}/${m}"; then
-      printf 'FATAL: could not download module: %s\n' "$url" >&2
-      rm -rf "$tmp"
-      return 1
-    fi
+    if [ ! -r "${dir}/${m}" ]; then printf '%s' "$m"; return 1; fi
   done
-  printf '%s' "$tmp"
+  return 0
+}
+
+# _boot_try_clone <tmp> — shallow-clone the repo; echoes the lib dir on success.
+_boot_try_clone() {
+  local tmp="$1" ref missing dest
+  command -v git >/dev/null 2>&1 || { _boot_tried "git clone -> git is not installed"; return 1; }
+  # "" first = whatever the remote calls its default branch.
+  for ref in "" ${EREGISTER_RAW_REFS//,/ }; do
+    dest="${tmp}/repo${ref:+-$ref}"
+    rm -rf "$dest"
+    if [ -z "$ref" ]; then
+      git clone --quiet --depth 1 "$EREGISTER_REPO" "$dest" >/dev/null 2>&1 || {
+        _boot_tried "git clone ${EREGISTER_REPO} (default branch) -> failed (no network? private repo?)"; continue; }
+    else
+      git clone --quiet --depth 1 --branch "$ref" "$EREGISTER_REPO" "$dest" >/dev/null 2>&1 || {
+        _boot_tried "git clone ${EREGISTER_REPO} --branch ${ref} -> failed (branch missing?)"; continue; }
+    fi
+    if missing="$(_boot_have_all "${dest}/lib")"; then
+      printf '%s' "${dest}/lib"; return 0
+    fi
+    _boot_tried "git clone ${EREGISTER_REPO} ${ref:-(default branch)} -> cloned OK, but lib/${missing} is not on that branch"
+  done
+  return 1
+}
+
+# _boot_try_raw <tmp> — download every module over HTTP; echoes the lib dir.
+_boot_try_raw() {
+  local tmp="$1" base ref bases=() m url dest code ok
+  command -v curl >/dev/null 2>&1 || { _boot_tried "http download -> curl is not installed"; return 1; }
+
+  if [ "$_BOOT_RAW_BASE_PINNED" = "1" ]; then
+    bases=("$EREGISTER_RAW_BASE")
+  else
+    bases=("$EREGISTER_RAW_BASE")
+    for ref in ${EREGISTER_RAW_REFS//,/ }; do
+      base="$(_boot_raw_base "$ref")"
+      [ -n "$base" ] && [ "$base" != "$EREGISTER_RAW_BASE" ] && bases+=("$base")
+    done
+  fi
+
+  for base in "${bases[@]}"; do
+    [ -n "$base" ] || continue
+    dest="${tmp}/raw"
+    rm -rf "$dest"; mkdir -p "$dest"
+    ok=1
+    for m in "${EREGISTER_MODULES[@]}"; do
+      url="${base}/lib/${m}"
+      mkdir -p "${dest}/$(dirname "$m")"
+      # No -f: it hides the status behind curl's own exit code. Check it here.
+      code="$(curl -sSL -o "${dest}/${m}" -w '%{http_code}' "$url" 2>/dev/null)" || code="000"
+      if [ "$code" != "200" ]; then
+        rm -f "${dest}/${m}"
+        _boot_tried "${url} -> HTTP ${code}"
+        ok=0
+        break
+      fi
+    done
+    if [ "$ok" = "1" ]; then printf '%s' "$dest"; return 0; fi
+  done
+  return 1
+}
+
+# _boot_fail — one diagnostic that names the cause instead of a curl exit code.
+_boot_fail() {
+  local t self repo_name
+  self="$(basename "${BASH_SOURCE[0]:-install.sh}")"
+  repo_name="$(basename "${EREGISTER_REPO%.git}")"
+  _boot_log ""
+  _boot_log "FATAL: could not obtain the eRegister modules (lib/)."
+  _boot_log "Tried:"
+  while IFS= read -r t; do _boot_log "  • ${t}"; done < "${_BOOT_TRIED_FILE:-/dev/null}"
+  _boot_log ""
+  _boot_log "An HTTP 404 here almost always means one of:"
+  _boot_log "  • the file is not pushed to that branch yet — the script you are running"
+  _boot_log "    is newer than what is published (commit and push lib/, then retry);"
+  _boot_log "  • you pushed in the last few minutes and the raw CDN is still stale;"
+  _boot_log "  • the branch does not exist, or the repo is private (raw answers 404,"
+  _boot_log "    not 401, for private repos — use a checkout and an SSH key instead)."
+  _boot_log ""
+  _boot_log "Work around it with a checkout:"
+  _boot_log "  git clone ${EREGISTER_REPO}"
+  _boot_log "  cd ${repo_name} && ./${self}"
+  _boot_log "Or point the scripts at a branch that has the modules:"
+  _boot_log "  EREGISTER_RAW_REFS=my-branch   (comma-separated; tried in order)"
+  _boot_log "  EREGISTER_RAW_BASE=<raw url>   (used verbatim; set EREGISTER_RAW_BASE_PINNED=1 to stop the guessing)"
+  _boot_log ""
+  exit 1
+}
+
+bootstrap_modules() {
+  local tmp lib
+  tmp="$(mktemp -d "${TMPDIR:-/tmp}/eregister-lib.XXXXXX")" || exit 1
+  BOOTSTRAP_DIR="$tmp"          # cleaned up on EXIT, whichever way we got in
+  _BOOT_TRIED_FILE="${tmp}/attempts.log"
+  : > "$_BOOT_TRIED_FILE"
+  _boot_log "lib/ not found locally — fetching the modules …"
+  if lib="$(_boot_try_clone "$tmp")"; then
+    _boot_log "Modules obtained by cloning ${EREGISTER_REPO}."
+    printf '%s' "$lib"; return 0
+  fi
+  if lib="$(_boot_try_raw "$tmp")"; then
+    _boot_log "Modules downloaded over HTTP."
+    printf '%s' "$lib"; return 0
+  fi
+  _boot_fail
 }
 
 # -----------------------------------------------------------------------------
-# Module loader — prefer lib/ next to this script; otherwise self-bootstrap.
+# Module loader — prefer lib/ next to this script; otherwise bootstrap it.
 # -----------------------------------------------------------------------------
 load_modules() {
   local self_dir lib_dir m
@@ -147,13 +297,16 @@ load_modules() {
   lib_dir="${EREGISTER_LIB_DIR:-${self_dir:+${self_dir}/lib}}"
 
   if [ -z "$lib_dir" ] || [ ! -d "$lib_dir" ]; then
-    lib_dir="$(bootstrap_modules)" || exit 1
-    BOOTSTRAP_DIR="$lib_dir"   # mark for cleanup (see cleanup() in traps.sh)
+    lib_dir="$(bootstrap_modules)"
   fi
 
   for m in "${EREGISTER_MODULES[@]}"; do
     if [ ! -r "${lib_dir}/${m}" ]; then
-      printf 'FATAL: missing module: %s/%s\n' "$lib_dir" "$m" >&2
+      # A local lib/ that is missing a module is the same "you are running a
+      # newer script than your checkout" problem — say so plainly.
+      _boot_log "FATAL: missing module: ${lib_dir}/${m}"
+      _boot_log "Your lib/ is older than this script. Update the checkout (git pull),"
+      _boot_log "or unset EREGISTER_LIB_DIR to let it fetch a matching set."
       exit 1
     fi
     # shellcheck source=/dev/null

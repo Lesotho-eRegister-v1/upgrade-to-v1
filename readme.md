@@ -4,6 +4,40 @@ To run this script, just copy and paste this line below in your terminal:
 curl -fsSL https://raw.githubusercontent.com/Lesotho-eRegister-v1/upgrade-to-v1/refs/heads/main/install.sh | bash
 ```
 
+## Already on v1? Run the catch-up script
+
+These scripts keep gaining steps — asset repos, the concept dictionary, the
+nightly repo auto-pull, the daily clinical form import. A site installed from an
+earlier version never got the newer ones. **This one line checks everything the
+installer is meant to have set up and redoes only what is missing or out of
+date**, on a live site:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Lesotho-eRegister-v1/upgrade-to-v1/refs/heads/main/catch-up.sh | bash
+```
+
+> [!NOTE]
+> Every check is read-only, every repo update is a fast-forward, and a repo with
+> local changes is reported and left alone. **One step does act on a running
+> container:** the last job recreates the EMR service
+> (`docker compose up -d --force-recreate --renew-anon-volumes openmrs`) so the
+> refreshed config, omods and forms are actually loaded. That costs the EMR's
+> usual 30+ minute boot, so run it outside clinic hours — or pass
+> `--no-recreate` to skip it. Patient data lives in the `openmrsdb` service and
+> its named volumes and is not touched.
+
+It updates itself first (`git pull`, then re-runs from the fresh copy), so the
+line above always applies the newest checks. Non-interactive form:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Lesotho-eRegister-v1/upgrade-to-v1/refs/heads/main/catch-up.sh | sudo EREGISTER_BAHMNI_PASS='<superman password>' bash -s -- --yes
+```
+
+Useful flags: `--no-recreate` (skip the EMR reload — then nothing touches a
+running container), `--no-stack` (leave `bahmni-docker-ls` alone), `--no-forms`,
+`--install-dir DIR`. It exits `0` only when there are no gaps, so it also works
+as a monitoring check. Full detail: [Catching an early site up](#catching-an-early-site-up).
+
 > [!WARNING]
 > If you need to do the upgrade process again, remember to run:
 > `docker volume rm $(docker volume ls -q)` to clean all volumes.
@@ -57,7 +91,8 @@ lib/
     ├── postinstall.sh           # post_verify, next_steps
     ├── concepts.sh              # import_concepts (concept dictionary -> openmrsdb)
     ├── forms.sh                 # install_form_import (clinical-obs-forms -> EMR, daily)
-    └── autopull.sh              # install_auto_pull (systemd timer / cron.d)
+    ├── autopull.sh              # install_auto_pull (systemd timer / cron.d)
+    └── catchup.sh               # catch_up (reconcile a deployed site + report)
 bin/
 └── bahmni_form_import.sh        # the form importer itself (installed to /usr/local/bin)
 ```
@@ -193,6 +228,152 @@ Remember to `sudo chmod +x /usr/local/bin/eregister-autopull.sh`
 Tune or disable via env vars: `EREGISTER_AUTO_PULL=0` (off),
 `EREGISTER_AUTO_PULL_ONCALENDAR` (systemd schedule, default `*-*-* 02:30:00`),
 `EREGISTER_AUTO_PULL_CRON` (cron schedule, default `30 2 * * *`).
+
+# Catching an early site up
+
+`catch-up.sh` is the reconcile tool for sites that were installed before these
+scripts grew their later steps. `install.sh` is the wrong tool for that job — it
+freezes the old stack, restores a backup and restarts everything. Catch-up does
+the opposite: it checks what is already there, fixes only the gaps, and reports.
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Lesotho-eRegister-v1/upgrade-to-v1/refs/heads/main/catch-up.sh | bash
+```
+(or, from the upgrade repo: `bash ./catch-up.sh`)
+
+Everything it checks is read-only, and the one step that acts on a running
+container — the EMR reload — comes last and is confirmed first.
+
+What it does, in order:
+
+1. **Updates these scripts.** Inside a checkout it fast-forwards it; piped from
+   `curl` it clones/updates `/var/lib/v1/upgrade-to-v1`. Either way it re-runs
+   itself once from the fresh copy, so the checks that follow are the current
+   ones. A checkout with local changes is left alone.
+2. **Updates every dependency repo** the installer pulls — `bahmni-docker-ls`,
+   `standard-config-ls`, `openmrs-v1-modules`, `implementer-interface-release`,
+   `clinical-obs-forms`, `dhisconnector_mappings_v1`,
+   `eregister_concepts_release_v1` — cloning the ones a site never got. Repos
+   with uncommitted local changes are reported and skipped, never reset. The
+   0.92 `bahmni_config` stays pinned. `bahmni-docker-ls` is updated on disk
+   only; the report says it needs a `docker compose up -d` at your next
+   maintenance window (`--no-stack` skips it entirely).
+3. **Reinstalls the generated helpers** — `eregister-autopull.sh`,
+   `bahmni-form-import.sh`, `eregister-form-import.sh` — from the release that
+   was just pulled. An existing `/etc/eregister/form-import.env` is never
+   overwritten; a missing one is written after prompting for the password.
+4. **Checks both scheduled jobs** (`eregister-autopull`, `eregister-form-import`)
+   and installs whichever is absent, as a systemd timer or an `/etc/cron.d`
+   entry. Hosts with neither get the exact cron line to add by hand.
+5. **Runs the clinical form import** — only forms whose content changed are
+   deployed, so on a current site this is a no-op.
+6. **Reports on the concept dictionary** — dump size/date and the live
+   `concept` row count. It never imports it: that replaces the `concept_*` and
+   `drug*` tables, which is a maintenance-window decision. Run
+   `./import-concepts.sh` deliberately when you want it.
+7. **Reports service health** — `docker compose ps` per service plus HTTP
+   probes of the OpenMRS REST API and the Bahmni UI. This is the site **as
+   found**, probed before the reload below.
+8. **Reloads the EMR**, last, so everything refreshed above is actually picked
+   up:
+
+   ```bash
+   docker compose up -d --force-recreate --renew-anon-volumes openmrs
+   ```
+
+   A long-running `openmrs` container keeps serving the config it read at boot,
+   and content seeded into its **anonymous** volumes survives a plain restart —
+   so `--force-recreate` replaces the container and `--renew-anon-volumes`
+   throws those volumes away to be re-seeded. The EMR is then down for its usual
+   30+ minute boot. Named volumes and the `openmrsdb` service (patient data) are
+   untouched, but anything hand-placed *inside* the running EMR container rather
+   than in its config repo is gone. Skip with `--no-recreate` /
+   `EREGISTER_CATCHUP_RECREATE=0`; change the service with
+   `EREGISTER_EMR_SERVICE`.
+
+Then it prints one table:
+
+```text
+  ⟳ FIXED self      upgrade-to-v1                    a1b2c3d -> e4f5g6h
+  — SKIP  repo      bahmni-docker-ls                 uncommitted local changes — left untouched
+  ⟳ FIXED repo      clinical-obs-forms               main 4ad5c52 -> e3b2e34
+  ✔ OK    repo      standard-config-ls               current (main @ 0f2d92c)
+  ⟳ FIXED script    eregister-form-import.sh         was missing — installed
+  ⟳ FIXED cron      eregister-form-import            installed — systemd timer active, next: Tue 03:30
+  ✔ OK    forms     import                           imported 0/12 form(s), 12 unchanged, 0 failed
+  ✔ OK    concepts  database                         openmrs.concept holds 412345 rows
+  ✘ GAP   service   reports                          exited — Exited (1) 2 hours ago
+  ✔ OK    endpoint  openmrs REST                     https://localhost/openmrs — HTTP 200
+  ⟳ FIXED reload    openmrs                          recreated with renewed anonymous volumes — booting now
+```
+
+`OK` = already current · `FIXED` = redone by this run · `SKIP` = deliberately
+left alone · `GAP` = needs a human. The exit status is `0` only when there are
+no `GAP` rows, so it can be wired into monitoring:
+
+```bash
+30 6 * * 1 /var/lib/v1/upgrade-to-v1/catch-up.sh --yes --no-forms --no-recreate >> /var/log/eregister-catchup.log 2>&1
+```
+
+Flags: `--yes`, `--no-recreate`, `--no-stack`, `--no-forms`, `--no-concepts`
+(skips the DB count), `--install-dir DIR`, `--no-color`. Env: `EREGISTER_BAHMNI_PASS` (needed
+for `--yes` if the credentials file is missing), `EREGISTER_UPGRADE_REPO`,
+`EREGISTER_UPGRADE_REF`, `EREGISTER_CATCHUP_STACK_REPO=0`,
+`EREGISTER_CATCHUP_DB_CHECK=0`, `EREGISTER_CATCHUP_HTTP_TIMEOUT`,
+`EREGISTER_CATCHUP_RECREATE=0`, `EREGISTER_EMR_SERVICE`.
+
+> [!WARNING]
+> The monitoring/cron use above should carry `--no-recreate`. Left on, every
+> scheduled run would recreate the EMR and take it down for half an hour.
+
+# Troubleshooting: `curl: (56) The requested URL returned error: 404`
+
+That is the one-liners failing to fetch their own modules. It is a **404 on a
+raw.githubusercontent.com URL** — curl reports it as exit `56` rather than the
+usual `22` because of an HTTP/2 quirk, and the old message named neither the
+file nor the reason.
+
+The scripts now handle this properly. They fetch modules by shallow-cloning the
+repo first (which resolves the remote's default branch by itself) and fall back
+to per-file downloads, they accept the tree only once **every** required module
+is present, and they print which URL returned what:
+
+```text
+FATAL: could not obtain the eRegister modules (lib/).
+Tried:
+  • git clone https://github.com/…/upgrade-to-v1 (default branch) -> cloned OK, but lib/upgrade/catchup.sh is not on that branch
+  • https://raw.githubusercontent.com/…/refs/heads/main/lib/upgrade/catchup.sh -> HTTP 404
+```
+
+**In almost every case the cause is the first one: the file is not pushed yet.**
+A one-liner fetches from the branch, not from your laptop, so a module added
+locally 404s for every site until it is pushed. The other two causes are a
+just-pushed file still stale in the raw CDN (a few minutes), and a branch that
+does not exist or a repo that is private — raw answers `404`, not `401`, for
+private repos.
+
+Check it before a site does — run this after any push that adds or renames a
+file under `lib/` or `bin/`:
+
+```bash
+./tests/check-published.sh          # or: ./tests/check-published.sh <branch>
+```
+
+It probes every module each entry script lists, plus `bin/bahmni_form_import.sh`,
+and flags anything uncommitted or unpushed in your checkout. Exit `0` means the
+one-liners work right now.
+
+Workarounds while a fix is being pushed:
+
+```bash
+# run from a checkout — nothing is fetched at all
+git clone https://github.com/Lesotho-eRegister-v1/upgrade-to-v1
+cd upgrade-to-v1 && ./install.sh
+
+# or point the scripts at a branch that does have the modules
+EREGISTER_RAW_REFS=my-branch ./install.sh
+EREGISTER_RAW_BASE=<raw url> EREGISTER_RAW_BASE_PINNED=1 ./install.sh
+```
 
 # Checklist
     - working superman password. ✅

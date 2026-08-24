@@ -42,6 +42,7 @@ resolve_config() {
   # already been deployed must survive that.
   FORM_IMPORT_STATE="${V1_DIR}/.bahmni_form_import_state.json"
   FORM_IMPORT_WORKDIR="${V1_DIR}/form-import"
+  UPGRADE_REPO_DIR="${EREGISTER_UPGRADE_REPO_DIR:-${V1_DIR}/upgrade-to-v1}"
 }
 
 print_config() {

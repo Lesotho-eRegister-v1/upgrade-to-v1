@@ -41,23 +41,37 @@
 # `curl | bash` install path, which has no local checkout.
 # -----------------------------------------------------------------------------
 _forms_install_importer() {
-  local self_dir local_copy tmp
+  local self_dir cand tmp url code
+  # Repo root relative to this module — covers both a checkout and the clone the
+  # bootstrap makes when only install.sh was piped in.
   self_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." 2>/dev/null && pwd)" || self_dir=""
-  local_copy="${self_dir:+${self_dir}/bin/bahmni_form_import.sh}"
 
-  if [ -n "$local_copy" ] && [ -r "$local_copy" ]; then
-    as_root install -m 0755 "$local_copy" "$FORM_IMPORT_SCRIPT"
-  else
-    info "bin/bahmni_form_import.sh not found locally — downloading it from ${RAW_BASE} …"
-    tmp="$(mktemp)"
-    if ! curl -fsSL "${RAW_BASE}/bin/bahmni_form_import.sh" -o "$tmp"; then
-      rm -f "$tmp"
-      error "Could not download ${RAW_BASE}/bin/bahmni_form_import.sh"
-      return 1
+  for cand in "${self_dir:+${self_dir}/bin/bahmni_form_import.sh}" \
+              "${UPGRADE_REPO_DIR:+${UPGRADE_REPO_DIR}/bin/bahmni_form_import.sh}"; do
+    if [ -n "$cand" ] && [ -r "$cand" ]; then
+      as_root install -m 0755 "$cand" "$FORM_IMPORT_SCRIPT"
+      success "Installed form importer: ${FORM_IMPORT_SCRIPT} (from ${cand})"
+      return 0
     fi
-    as_root install -m 0755 "$tmp" "$FORM_IMPORT_SCRIPT"
+  done
+
+  # Last resort: fetch it. The status is checked here rather than left to
+  # `curl -f`, which over HTTP/2 reports a missing file as the unhelpful
+  # "curl: (56) The requested URL returned error: 404".
+  url="${RAW_BASE}/bin/bahmni_form_import.sh"
+  info "bin/bahmni_form_import.sh not found locally — downloading it from ${RAW_BASE} …"
+  tmp="$(mktemp)"
+  code="$(curl -sSL -o "$tmp" -w '%{http_code}' "$url" 2>/dev/null)" || code="000"
+  if [ "$code" != "200" ] || [ ! -s "$tmp" ]; then
     rm -f "$tmp"
+    error "Could not download the form importer: HTTP ${code} for ${url}"
+    error "A 404 means bin/bahmni_form_import.sh is not on that branch yet (push it),"
+    error "or the branch/repo in EREGISTER_RAW_BASE is wrong or private."
+    error "Workaround: clone the repo and re-run from the checkout, so bin/ is local."
+    return 1
   fi
+  as_root install -m 0755 "$tmp" "$FORM_IMPORT_SCRIPT"
+  rm -f "$tmp"
   success "Installed form importer: ${FORM_IMPORT_SCRIPT}"
 }
 

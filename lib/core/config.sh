@@ -91,6 +91,28 @@ FORM_IMPORT_CRON="${EREGISTER_FORM_IMPORT_CRON:-30 3 * * *}"
 # auto-pull was declined. Set to 0 to import strictly what is on disk.
 FORM_IMPORT_SELF_PULL="${EREGISTER_FORM_IMPORT_SELF_PULL:-1}"
 
+# --- Catch-up / reconcile (catch-up.sh) -------------------------------------
+# catch-up.sh re-checks everything install.sh is meant to have set up and redoes
+# only what is missing or out of date. Its checks are read-only; the one thing it
+# acts on is the EMR service, recreated as the last job (see CATCHUP_RECREATE_EMR
+# below). See lib/upgrade/catchup.sh.
+# Update bahmni-docker-ls (the stack itself) along with the asset repos. The
+# files change on disk only — nothing is restarted — so the new compose/config
+# takes effect at the site's next maintenance window.
+CATCHUP_STACK_REPO="${EREGISTER_CATCHUP_STACK_REPO:-1}"
+# Query the openmrs DB for a concept count in the health report (read-only).
+CATCHUP_DB_CHECK="${EREGISTER_CATCHUP_DB_CHECK:-1}"
+# Seconds each HTTP health probe may take before it is called unreachable.
+CATCHUP_HTTP_TIMEOUT="${EREGISTER_CATCHUP_HTTP_TIMEOUT:-15}"
+# Final job of a catch-up run: recreate the EMR service so it picks up the
+# config, omods and forms that were just refreshed —
+#   docker compose up -d --force-recreate --renew-anon-volumes <EMR_SERVICE>
+# This is the ONE part of catch-up that touches a running container: the EMR
+# goes down and needs its usual 30+ minutes to come back, and the service's
+# ANONYMOUS volumes are discarded and re-seeded (named volumes, and the separate
+# openmrsdb service, are untouched). 0 (or --no-recreate) skips it.
+CATCHUP_RECREATE_EMR="${EREGISTER_CATCHUP_RECREATE:-1}"
+
 # --- Auto-update (periodic git pull of the v1 asset/config repos) ------------
 # After a successful upgrade, a scheduled job keeps the asset/config repos
 # (standard-config-ls, implementer-interface-release, openmrs-v1-modules,
@@ -110,6 +132,11 @@ AUTO_PULL_LOG="${EREGISTER_AUTO_PULL_LOG:-/var/log/eregister-autopull.log}"
 AUTO_PULL_UNIT="${EREGISTER_AUTO_PULL_UNIT:-eregister-autopull}"
 
 # Source repositories
+# This repo (the installer itself). catch-up.sh keeps a checkout at
+# UPGRADE_REPO_DIR and updates it before doing anything else, so a site always
+# reconciles against the latest version of these scripts.
+REPO_UPGRADE="${EREGISTER_UPGRADE_REPO:-https://github.com/Lesotho-eRegister-v1/upgrade-to-v1}"
+REF_UPGRADE="${EREGISTER_UPGRADE_REF:-main}"
 REPO_BAHMNI_DOCKER="https://github.com/Lesotho-eRegister-v1/bahmni-docker-ls"
 REPO_STANDARD_CONFIG="https://github.com/Lesotho-eRegister-v1/standard-config-ls"
 REPO_CONFIG_092="https://github.com/eRegister/bahmni_config092"
@@ -152,6 +179,7 @@ CONCEPTS_SQL=""       # <base>/v1/eregister_concepts_release_v1/<CONCEPTS_SQL_NA
 FORMS_DIR=""          # <base>/v1/clinical-obs-forms  (the JSON form exports)
 FORM_IMPORT_STATE=""  # <base>/v1/.bahmni_form_import_state.json (per-form sha256+version)
 FORM_IMPORT_WORKDIR="" # <base>/v1/form-import  (importErrors.txt from unattended runs)
+UPGRADE_REPO_DIR=""   # <base>/v1/upgrade-to-v1  (this repo, kept current by catch-up.sh)
 
 # Runtime state (for rollback) — touched as the upgrade progresses
 WORKDIR=""

@@ -113,7 +113,12 @@ ${C_OK}════════════════════════�
     Log:             ${AUTO_PULL_LOG}
 
   Re-running this script is safe (idempotent). Use --force to redo a
-  completed upgrade.
+  completed upgrade. To pick up later changes to these scripts without a full
+  re-run, use the catch-up script instead — it reconciles the repos, helpers and
+  scheduled jobs in place, reports on service health, and reloads the EMR
+  service at the end (--no-recreate to leave even that alone):
+       curl -fsSL ${RAW_BASE}/catch-up.sh | bash
+     (or, from the upgrade repo:  ./catch-up.sh)
 
 ${C_ERR}  ⚠ Please wait ~30+ minutes before using eRegister. The v1 services
     need time to fully start up, and this can take considerably longer
