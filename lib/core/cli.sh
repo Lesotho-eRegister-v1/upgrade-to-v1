@@ -15,6 +15,7 @@ parse_args() {
       --install-dir)  INSTALL_BASE="${2:?--install-dir needs a value}"; shift ;;
       --target-ref)   TARGET_REF="${2:?--target-ref needs a value}"; shift ;;
       --no-concepts)  IMPORT_CONCEPTS="0" ;;
+      --no-forms)     IMPORT_FORMS="0" ;;
       --no-color)     USE_COLOR="no" ;;
       -h|--help)      usage; exit 0 ;;
       *) error "Unknown argument: $1"; usage; exit 2 ;;
@@ -35,6 +36,12 @@ resolve_config() {
   RESTORE_DIR="${V1_DIR}/bahmni-docker-ls/bahmni-standard"
   CONCEPTS_DIR="${V1_DIR}/eregister_concepts_release_v1"
   CONCEPTS_SQL="${CONCEPTS_DIR}/${CONCEPTS_SQL_NAME}"
+  FORMS_DIR="${EREGISTER_FORMS_DIR:-${V1_DIR}/clinical-obs-forms}"
+  # State and scratch deliberately sit in V1_DIR, NOT inside the clone: the
+  # auto-pull job hard-resets clinical-obs-forms, and the record of what has
+  # already been deployed must survive that.
+  FORM_IMPORT_STATE="${V1_DIR}/.bahmni_form_import_state.json"
+  FORM_IMPORT_WORKDIR="${V1_DIR}/form-import"
 }
 
 print_config() {
@@ -54,6 +61,7 @@ print_config() {
   ${C_DIM}v1 dir${C_RESET}         : ${V1_DIR}
   ${C_DIM}eRegister_HOME${C_RESET} : ${eRegister_HOME}
   ${C_DIM}Concept import${C_RESET} : $( [ "$IMPORT_CONCEPTS" = "1" ] && echo "${CONCEPTS_SQL} -> ${DB_SERVICE}:${DB_NAME}" || echo "disabled (--no-concepts)" )
+  ${C_DIM}Form import${C_RESET}    : $( [ "$IMPORT_FORMS" = "1" ] && echo "${FORMS_DIR} -> ${BAHMNI_URL} as '${BAHMNI_USER}' (daily: ${FORM_IMPORT_CRON})" || echo "disabled (--no-forms)" )
   ${C_DIM}Old stack${C_RESET}      : ${OLD_DOCKER_DIR}
   ${C_DIM}EMR container${C_RESET}  : ${EMR_CONTAINER}
   ${C_DIM}Privilege${C_RESET}      : $( [ -n "$SUDO" ] && echo "sudo" || echo "direct" )

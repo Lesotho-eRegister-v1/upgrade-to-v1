@@ -60,6 +60,37 @@ CONCEPTS_DB_WAIT="${EREGISTER_CONCEPTS_DB_WAIT:-300}"
 # same default in install.sh / ocl-fix.sh / import-concepts.sh).
 RAW_BASE="${EREGISTER_RAW_BASE:-https://raw.githubusercontent.com/Lesotho-eRegister-v1/upgrade-to-v1/refs/heads/main}"
 
+# --- Clinical observation form import ---------------------------------------
+# The clinical-obs-forms clone holds Bahmni Form Builder JSON exports. They are
+# deployed over the REST API by bin/bahmni_form_import.sh — the scripted
+# equivalent of the Implementer Interface's "Import" button — once at the end of
+# the upgrade and DAILY thereafter. See lib/upgrade/forms.sh.
+IMPORT_FORMS="${EREGISTER_IMPORT_FORMS:-1}"           # 0 (or --no-forms) disables it
+# EMR endpoint and account the importer authenticates with. The password is NOT
+# hard-coded: it is prompted at runtime, or taken from EREGISTER_BAHMNI_PASS for
+# non-interactive/CI use, and stored 0600 in FORM_IMPORT_ENV for the daily job.
+BAHMNI_URL="${EREGISTER_BAHMNI_URL:-https://localhost}"
+BAHMNI_USER="${EREGISTER_BAHMNI_USER:-superman}"
+BAHMNI_PASS="${EREGISTER_BAHMNI_PASS:-${BAHMNI_PASS:-}}"
+# The stack ships a self-signed certificate, so curl needs -k by default.
+FORM_IMPORT_INSECURE="${EREGISTER_FORM_IMPORT_INSECURE:-1}"
+# Where the importer, the scheduled wrapper, its credentials, its log and its
+# scratch dir live, plus the unit/file basename shared by the systemd units and
+# the cron.d file.
+FORM_IMPORT_SCRIPT="${EREGISTER_FORM_IMPORT_SCRIPT:-/usr/local/bin/bahmni-form-import.sh}"
+FORM_IMPORT_RUNNER="${EREGISTER_FORM_IMPORT_RUNNER:-/usr/local/bin/eregister-form-import.sh}"
+FORM_IMPORT_ENV="${EREGISTER_FORM_IMPORT_ENV:-/etc/eregister/form-import.env}"
+FORM_IMPORT_LOG="${EREGISTER_FORM_IMPORT_LOG:-/var/log/eregister-form-import.log}"
+FORM_IMPORT_UNIT="${EREGISTER_FORM_IMPORT_UNIT:-eregister-form-import}"
+# Daily, deliberately AFTER the auto-pull run (02:30) so each night's import
+# sees the forms that were pulled the same night.
+FORM_IMPORT_ONCALENDAR="${EREGISTER_FORM_IMPORT_ONCALENDAR:-*-*-* 03:30:00}"
+FORM_IMPORT_CRON="${EREGISTER_FORM_IMPORT_CRON:-30 3 * * *}"
+# The scheduled runner refreshes the clinical-obs-forms clone itself before
+# importing, so the daily import still picks up new forms on a host where
+# auto-pull was declined. Set to 0 to import strictly what is on disk.
+FORM_IMPORT_SELF_PULL="${EREGISTER_FORM_IMPORT_SELF_PULL:-1}"
+
 # --- Auto-update (periodic git pull of the v1 asset/config repos) ------------
 # After a successful upgrade, a scheduled job keeps the asset/config repos
 # (standard-config-ls, implementer-interface-release, openmrs-v1-modules,
@@ -118,6 +149,9 @@ DONE_MARKER=""        # <base>/v1/.eregister-upgrade-complete
 RESTORE_DIR=""        # <base>/v1/bahmni-docker-ls/bahmni-standard
 CONCEPTS_DIR=""       # <base>/v1/eregister_concepts_release_v1
 CONCEPTS_SQL=""       # <base>/v1/eregister_concepts_release_v1/<CONCEPTS_SQL_NAME>
+FORMS_DIR=""          # <base>/v1/clinical-obs-forms  (the JSON form exports)
+FORM_IMPORT_STATE=""  # <base>/v1/.bahmni_form_import_state.json (per-form sha256+version)
+FORM_IMPORT_WORKDIR="" # <base>/v1/form-import  (importErrors.txt from unattended runs)
 
 # Runtime state (for rollback) — touched as the upgrade progresses
 WORKDIR=""

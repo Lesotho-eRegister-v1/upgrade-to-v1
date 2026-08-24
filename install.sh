@@ -8,7 +8,7 @@
 #
 # USAGE
 #   ./install.sh [--yes] [--force] [--install-dir DIR] [--target-ref REF]
-#                [--no-concepts] [--help]
+#                [--no-concepts] [--no-forms] [--help]
 #
 # FLAGS / ENV
 #   -y, --yes            Non-interactive; assume "yes" to all prompts (CI/automation).
@@ -24,6 +24,8 @@
 #                          --target-ref Bokang-changes,main
 #                        Default: empty (each repo uses its own default ref).
 #   --no-concepts        Skip the post-install concept-dictionary import.
+#   --no-forms           Skip the post-install clinical form import (and its
+#                        daily job).
 #   --no-color           Disable ANSI colors.
 #   -h, --help           Show help and exit.
 #
@@ -36,6 +38,28 @@
 #     EREGISTER_CONCEPTS_SQL_NAME      Dump filename inside the concepts repo.
 #     EREGISTER_CONCEPTS_DB_WAIT       Seconds to wait for openmrsdb (default 300).
 #   Re-run it on its own at any time with ./import-concepts.sh.
+#
+#   After the concept dictionary is in place, the clinical observation forms
+#   shipped in the clinical-obs-forms clone are imported into the running EMR
+#   over its REST API — the scripted equivalent of clicking "Import" in the
+#   Implementer Interface for every form file. The importer
+#   (bin/bahmni_form_import.sh) is installed to /usr/local/bin/bahmni-form-import.sh
+#   and scheduled to run DAILY so forms pushed to that repo go live on their own.
+#   Only forms whose CONTENT changed are deployed (sha256 per form, recorded in
+#   <base>/v1/.bahmni_form_import_state.json), and a changed form is deployed as
+#   a NEW version rather than overwriting the live one — so a same-named file
+#   holding a new export counts as new work, while an unchanged file that was
+#   merely re-pulled is skipped. Control it:
+#     EREGISTER_IMPORT_FORMS=0         Skip it (same as --no-forms).
+#     EREGISTER_BAHMNI_URL/_USER/_PASS EMR endpoint and account (default
+#                                      https://localhost, superman; the password
+#                                      is prompted when not set).
+#     EREGISTER_FORMS_DIR              Folder of form JSON (default the clone).
+#     EREGISTER_FORM_IMPORT_ONCALENDAR systemd OnCalendar (default '*-*-* 03:30:00').
+#     EREGISTER_FORM_IMPORT_CRON       cron schedule    (default '30 3 * * *').
+#   Credentials for the unattended runs live in /etc/eregister/form-import.env
+#   (0600). Re-run it on its own at any time with ./import-forms.sh, or
+#   sudo /usr/local/bin/eregister-form-import.sh.
 #
 #   After a successful upgrade, the installer offers to schedule a job that
 #   periodically pulls the v1 asset/config repos (standard-config-ls,
@@ -54,7 +78,7 @@
 #       lib/core/    config, logging, traps, prompt, cli
 #       lib/system/  platform, privilege, deps
 #       lib/upgrade/ verify, detect, backup, migrate, rollback, postinstall,
-#                    concepts, autopull
+#                    concepts, forms, autopull
 #     Override the lib location with EREGISTER_LIB_DIR (e.g. for system install).
 #   * Because functions now live in separate files, this is NO LONGER safe to
 #     `curl | bash` directly — clone/download the whole repo and run ./install.sh.
@@ -88,6 +112,7 @@ EREGISTER_MODULES=(
   upgrade/rollback.sh
   upgrade/postinstall.sh
   upgrade/concepts.sh
+  upgrade/forms.sh
   upgrade/autopull.sh
 )
 
@@ -229,6 +254,14 @@ main() {
   # Needs only openmrsdb, which is up well before the EMR finishes booting.
   if ! import_concepts; then
     warn "Concept dictionary NOT imported. Run it again later with: ./import-concepts.sh"
+  fi
+
+  # --- import the clinical observation forms (optional, post-completion) --
+  # Same contract as the concept import: the upgrade is already finalized, so a
+  # failure here warns and points at the standalone runner. This installs the
+  # importer, deploys the forms once, and schedules the daily job.
+  if ! install_form_import; then
+    warn "Clinical forms NOT imported. Run it again later with: ./import-forms.sh"
   fi
 
   # --- schedule automatic repo updates (optional, post-completion) --------

@@ -88,6 +88,21 @@ ${C_OK}════════════════════════�
          curl -fsSL ${RAW_BASE}/import-concepts.sh | bash
        (or, from the upgrade repo:  ./import-concepts.sh)
 
+  Clinical observation forms:
+    ${FORMS_DIR}
+    is imported into ${BAHMNI_URL} as '${BAHMNI_USER}' by
+    ${FORM_IMPORT_RUNNER}
+    (${C_DIM}systemd: ${FORM_IMPORT_UNIT}.timer, or /etc/cron.d/${FORM_IMPORT_UNIT}${C_RESET}), daily at ${FORM_IMPORT_CRON}.
+    Only forms whose content changed are deployed, and a changed form goes out
+    as a NEW version — the live one is never overwritten.
+    Import now:  sudo ${FORM_IMPORT_RUNNER}
+    Log:         ${FORM_IMPORT_LOG}
+    State:       ${FORM_IMPORT_STATE}
+    Credentials: ${FORM_IMPORT_ENV} (mode 0600)
+    Re-install / re-schedule:
+         curl -fsSL ${RAW_BASE}/import-forms.sh | bash
+       (or, from the upgrade repo:  ./import-forms.sh)
+
   Auto-updates:
     If you accepted the auto-update step, the asset/config repos
     (standard-config-ls, implementer-interface-release, openmrs-v1-modules,

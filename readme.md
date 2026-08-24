@@ -56,7 +56,10 @@ lib/
     ├── rollback.sh              # rollback
     ├── postinstall.sh           # post_verify, next_steps
     ├── concepts.sh              # import_concepts (concept dictionary -> openmrsdb)
+    ├── forms.sh                 # install_form_import (clinical-obs-forms -> EMR, daily)
     └── autopull.sh              # install_auto_pull (systemd timer / cron.d)
+bin/
+└── bahmni_form_import.sh        # the form importer itself (installed to /usr/local/bin)
 ```
 
 # Importing the concept dictionary
@@ -89,6 +92,74 @@ dictionary to show up:
 Skip or tune it with `--no-concepts` / `EREGISTER_IMPORT_CONCEPTS=0`,
 `EREGISTER_CONCEPTS_SQL_NAME` (dump filename) and `EREGISTER_CONCEPTS_DB_WAIT`
 (seconds to wait for `openmrsdb`, default 300).
+
+# Importing the clinical observation forms
+
+The `clinical-obs-forms` repo holds Bahmni Form Builder JSON exports. At the end
+of a run the installer deploys them into the running EMR over its REST API —
+concept UUID fix-up, `POST /form`, save body, save translations — which is
+exactly what the Implementer Interface's **Import** button does, minus the
+~1700 parallel fetches that produce its "Failed to fetch" errors.
+
+It installs:
+
+| Path | What it is |
+| --- | --- |
+| `/usr/local/bin/bahmni-form-import.sh` | the importer (`bin/bahmni_form_import.sh` in this repo) |
+| `/usr/local/bin/eregister-form-import.sh` | the wrapper cron/systemd runs: sources the credentials, refreshes the clone, imports the folder |
+| `/etc/eregister/form-import.env` | EMR URL / user / password, mode `0600` |
+| `eregister-form-import.timer` or `/etc/cron.d/eregister-form-import` | the **daily** schedule (03:30, after the 02:30 auto-pull) |
+| `/var/lib/v1/.bahmni_form_import_state.json` | what has been deployed: version + sha256 per form |
+| `/var/log/eregister-form-import.log` | log of every run |
+
+Called with no path the importer imports
+`${BAHMNI_FORMS_DIR:-${eRegister_HOME:-/var/lib/v1}/clinical-obs-forms}` —
+the deployed clone — recursively. (It used to default to a local `forms/`
+folder.) Files or folders can still be passed explicitly.
+
+## How it knows a form is new
+
+Detection is on file **content**, never on the file name or its timestamp:
+
+- each form's sha256 is recorded against `<server URL>|<form name>` in the state
+  file, so the same folder can be re-imported nightly and nothing moves unless
+  an author actually changed something;
+- a same-named file holding a **new export** hashes differently and is deployed
+  as a **new version** — `max(recorded version, version on the server) + 1` — so
+  the live version is never overwritten and the version history stays intact;
+- a file that was merely re-checked-out by the auto-pull job (fresh mtime,
+  identical bytes), re-downloaded or renamed is recognised as already deployed
+  and skipped;
+- the state file lives in `/var/lib/v1/`, **outside** the clone, so the
+  auto-pull job's `git reset --hard` cannot erase the deployment record. Even if
+  it were lost, the next version number is still taken from the server.
+
+Run one by hand at any time:
+
+```bash
+sudo /usr/local/bin/eregister-form-import.sh          # the scheduled job, now
+sudo /usr/local/bin/bahmni-form-import.sh -k --dry-run  # validate concepts only
+sudo /usr/local/bin/bahmni-form-import.sh -k --force     # re-deploy everything
+```
+
+Re-install or re-schedule the whole thing (also useful if it was skipped during
+the upgrade):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Lesotho-eRegister-v1/upgrade-to-v1/refs/heads/main/import-forms.sh | bash
+```
+(or, from the upgrade repo: `bash ./import-forms.sh`)
+
+Skip or tune it with `--no-forms` / `EREGISTER_IMPORT_FORMS=0`,
+`EREGISTER_BAHMNI_URL`, `EREGISTER_BAHMNI_USER`, `EREGISTER_BAHMNI_PASS`
+(needed for a non-interactive install — otherwise the password is prompted),
+`EREGISTER_FORMS_DIR`, `EREGISTER_FORM_IMPORT_CRON` (default `30 3 * * *`) and
+`EREGISTER_FORM_IMPORT_ONCALENDAR` (default `*-*-* 03:30:00`).
+
+A form whose concepts are not in the dictionary is **not** deployed: the run
+writes `<form>.importErrors.txt` into `/var/lib/v1/form-import/` listing the
+missing concept names, and exits non-zero. Load the concept dictionary first
+(see above) and the next run picks the form up.
 
 # Keeping the v1 repos up to date
 
