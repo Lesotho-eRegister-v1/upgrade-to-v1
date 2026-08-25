@@ -50,6 +50,27 @@ An example of how to use flags below:
 curl -fsSL https://raw.githubusercontent.com/Lesotho-eRegister-v1/upgrade-to-v1/refs/heads/main/install.sh | bash -s -- --force --yes
 ```
 
+### If the installer stopped part-way through
+
+The installer writes `/var/lib/v1/.eregister-upgrade-complete` to record **how
+far** it got, not merely that it ran:
+
+| `stage=` | meaning | what a re-run does |
+|---|---|---|
+| *(no file)* | nothing has been installed | runs the whole upgrade |
+| `migrated` | the stack was migrated, verified and **started**, but the post-install steps (concept import, form import, auto-updates) had not finished | **resumes** those steps — the migration is not redone, and nothing is stopped, restored or restarted |
+| `complete` | the whole run finished | prints a reference card and exits with "nothing to do" |
+
+This matters because the post-install steps are the slow ones — the concept
+import alone waits on the database and then loads a multi-hundred-MB dump — so a
+Ctrl-C or a dropped ssh session lands in the middle of them more often than not.
+Re-running `install.sh` picks them up from there.
+
+`--force` redoes everything from the 0.92 backup regardless of the stage. To
+reconcile a site that is already fully installed, use
+[`catch-up.sh`](#catching-an-early-site-up) instead — it does not touch the
+backup or the restore.
+
 What to do next:
 1. cd /var/lib/v1/bahmni-docker-ls/bahmni-standard
 2. Confirm services are healthy:

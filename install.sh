@@ -13,7 +13,8 @@
 # FLAGS / ENV
 #   -y, --yes            Non-interactive; assume "yes" to all prompts (CI/automation).
 #                        Also enabled with: EREGISTER_ASSUME_YES=1
-#   --force              Re-run upgrade even if a completed v1 marker exists.
+#   --force              Redo the whole upgrade even if the v1 marker says the
+#                        install already finished (or was only part-way through).
 #   --install-dir DIR    Override install base (default: /var/lib).
 #   --target-ref REF[,REF...]
 #                        Git ref(s)/tag(s)/commit(s) to check out for the repos.
@@ -87,6 +88,21 @@
 #   The standalone updater is installed to /usr/local/bin/eregister-autopull.sh
 #   and can be run by hand for a one-off sync.
 #
+#   RESUMING AN INTERRUPTED RUN. <base>/v1/.eregister-upgrade-complete records
+#   how far the last run got, not merely that one happened:
+#     stage=migrated   the stack was migrated, verified and started, but the
+#                      post-install steps (concept import, form import,
+#                      auto-updates) had not finished.
+#     stage=complete   the whole run finished.
+#   Those post-install steps run for a long time and are easy to interrupt, so a
+#   run that finds stage=migrated does NOT redo the migration: it picks up the
+#   outstanding steps where the last one stopped, leaving the stack running. Only
+#   stage=complete short-circuits with "nothing to do", and --force redoes
+#   everything from the 0.92 backup regardless. A marker written by an installer
+#   older than this one carries no stage; the outstanding steps are then inferred
+#   from what they leave on disk (the concept-import state file, the form-import
+#   runner).
+#
 #   ALREADY ON v1? Do not re-run this script to pick up changes made to it since
 #   your site was installed — it freezes the old stack, restores a backup and
 #   restarts everything. Run ./catch-up.sh instead: it reconciles a live site
@@ -111,6 +127,8 @@
 #     After adding or renaming anything under lib/ or bin/, PUSH IT, then run
 #     ./tests/check-published.sh — that is what the one-liners fetch.
 #   * ALL logic still lives in functions; main() is called on the LAST line.
+#     main() itself only decides WHICH of run_migration / run_post_install this
+#     run needs (see RESUMING above); the work lives in those two.
 ###############################################################################
 
 set -euo pipefail
@@ -331,29 +349,12 @@ load_modules() {
 # =============================================================================
 # main — the single entrypoint (no top-level work happens before this is called)
 # =============================================================================
-main() {
-  load_modules        # bring in all module functions/config before anything else
-
-  parse_args "$@"
-  setup_colors
-  install_traps
-  banner
-
-  # --- discovery (read-only) ---------------------------------------------
-  detect_platform
-  detect_pkg_mgr
-  resolve_config
-  detect_privilege
-  print_config
-
-  # --- idempotency guard --------------------------------------------------
-  if [ -f "$DONE_MARKER" ] && [ "$FORCE" != "1" ]; then
-    success "${APP_NAME} ${TARGET_VERSION} already installed (${DONE_MARKER}). Nothing to do."
-    success "Re-run with --force to redo the upgrade."
-    next_steps
-    exit 0
-  fi
-
+# run_migration — everything that changes the machine: dependencies, the backup,
+# freezing the 0.92 stack, cloning v1, the restore, the start and the verify.
+# Every step is individually confirmed, and declining rolls back once the old
+# stack has been frozen. Ends with the marker at stage=migrated.
+# =============================================================================
+run_migration() {
   # --- overall go/no-go (each step below is also confirmed individually) --
   warn "Cautious mode: you will be asked to confirm EVERY step before it runs."
   warn "Answer 'n' at any prompt to stop safely (with rollback if the old stack"
@@ -410,14 +411,27 @@ main() {
   confirm_step "Start eRegister ${TARGET_VERSION} via run-bahmni.sh (falls back to '${DOCKER_COMPOSE} up -d' on error)"
   start_v1_stack
 
-  # --- verify & finish ----------------------------------------------------
+  # --- verify & mark the migration done -----------------------------------
+  # post_verify records stage=migrated, NOT a finished install: the steps in
+  # run_post_install below still have to happen, and they take long enough to be
+  # interrupted. A resumable marker is what lets the next run pick them up
+  # instead of short-circuiting on "already installed".
   confirm_step "Run post-install verification and finalize the upgrade"
   post_verify
   UPGRADE_COMPLETE="1"   # disarms rollback in the error trap
+}
 
-  # --- load the v1 concept dictionary (optional, post-completion) ---------
-  # The upgrade is already finalized here, so this is advisory: a failure warns
-  # and points at the standalone runner rather than aborting or rolling back.
+# =============================================================================
+# run_post_install — the long tail of the install: the concept dictionary, the
+# clinical forms and the auto-update job, each with its own schedule.
+#
+# The migration is already finalized before any of this runs, so every step here
+# is ADVISORY: a failure warns and names the standalone script that redoes it,
+# and none of them can abort the run or trigger a rollback. Runs both at the end
+# of a fresh upgrade and on its own when a previous run was interrupted here.
+# =============================================================================
+run_post_install() {
+  # --- load the v1 concept dictionary -------------------------------------
   # Needs only openmrsdb, which is up well before the EMR finishes booting.
   if ! import_concepts; then
     warn "Concept dictionary NOT imported. Run it again later with: ./import-concepts.sh"
@@ -430,24 +444,91 @@ main() {
     warn "Scheduled concept import NOT installed. Add it later with: ./import-concepts.sh --schedule"
   fi
 
-  # --- import the clinical observation forms (optional, post-completion) --
-  # Same contract as the concept import: the upgrade is already finalized, so a
-  # failure here warns and points at the standalone runner. This installs the
-  # importer, deploys the forms once, and schedules the daily job.
+  # --- import the clinical observation forms ------------------------------
+  # This installs the importer, deploys the forms once, and schedules the daily
+  # job.
   if ! install_form_import; then
     warn "Clinical forms NOT imported. Run it again later with: ./import-forms.sh"
   fi
 
-  # --- schedule automatic repo updates (optional, post-completion) --------
+  # --- schedule automatic repo updates ------------------------------------
   # Declining here is NOT an abort: the upgrade is already done, so this is a
   # plain confirm (not confirm_step, which would roll back / exit). Honors
-  # --yes and EREGISTER_AUTO_PULL=0.
+  # --yes and EREGISTER_AUTO_PULL=0. The '|| warn' matters as much as the rest:
+  # without it an errexit on the very last step would kill the run just before
+  # the summary is printed.
   if [ "$AUTO_PULL" = "1" ] && confirm "Install the auto-update job that periodically pulls the v1 asset/config repos?"; then
-    install_auto_pull
+    install_auto_pull || warn "Auto-update job NOT installed. Add it later by re-running with --force."
   else
     info "Skipping auto-update scheduling. Enable it later by re-running with --force, or add your own cron/timer entry for ${AUTO_PULL_SCRIPT}."
   fi
+}
 
+# =============================================================================
+# main — the single entrypoint (no top-level work happens before this is called)
+# =============================================================================
+main() {
+  load_modules        # bring in all module functions/config before anything else
+
+  parse_args "$@"
+  setup_colors
+  install_traps
+  banner
+
+  # --- discovery (read-only) ---------------------------------------------
+  detect_platform
+  detect_pkg_mgr
+  resolve_config
+  detect_privilege
+  print_config
+
+  # --- idempotency guard --------------------------------------------------
+  # The marker says how far the last run got, so there are three cases, not two.
+  # The one that used to be missing is the middle one: a run that migrated the
+  # stack but was interrupted before the post-install steps finished. Treating
+  # that as "already installed" is what made the installer print a summary of
+  # work it had not done and exit without finishing the outstanding steps.
+  INSTALL_STAGE="$(resolve_install_stage)"
+  if [ -n "$INSTALL_STAGE" ] && [ "$FORCE" = "1" ]; then
+    warn "--force: redoing the whole upgrade even though the marker records stage=${INSTALL_STAGE}."
+    INSTALL_STAGE=""
+  fi
+
+  case "$INSTALL_STAGE" in
+    complete)
+      SUMMARY_MODE="existing"
+      success "${APP_NAME} ${TARGET_VERSION} is already installed (${DONE_MARKER}). Nothing to do."
+      info "To pick up later changes to these scripts on a live site, run ./catch-up.sh."
+      info "To redo the whole upgrade from the 0.92 backup, re-run with --force."
+      next_steps
+      exit 0
+      ;;
+    migrated)
+      SUMMARY_MODE="resume"
+      warn "A previous run migrated, verified and started the v1 stack, but stopped"
+      warn "before the post-install steps finished (${DONE_MARKER} records stage=migrated)."
+      warn "Resuming from there. The migration is NOT redone: nothing is stopped,"
+      warn "backed up, restored or restarted. Use --force to redo the whole upgrade."
+      if ! confirm "Resume the post-install steps (concept import, form import, auto-updates)?"; then
+        error "Aborted by user. Nothing was changed."
+        exit 1
+      fi
+      # Nothing was frozen in this run, so the error trap must not roll back.
+      UPGRADE_COMPLETE="1"
+      # The post-install steps drive docker compose, which run_migration would
+      # normally have resolved for them.
+      ensure_deps
+      ;;
+    *)
+      SUMMARY_MODE="upgrade"
+      run_migration
+      ;;
+  esac
+
+  run_post_install
+
+  # Only now is the install actually finished.
+  mark_stage complete
   next_steps
   success "Done."
 }

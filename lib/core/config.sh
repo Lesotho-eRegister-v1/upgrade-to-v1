@@ -233,3 +233,13 @@ BACKUP_SKIPPED="0"
 # Set by the concept import to the pre-import dump it took, so a failure can
 # point at the file that undoes it.
 CONCEPTS_PREIMPORT_SQL=""
+# What THIS run actually did — read by next_steps, which is printed after three
+# different kinds of run and must not report work it did not do.
+#   SUMMARY_MODE      upgrade | resume | existing (see next_steps)
+#   INSTALL_STAGE     the stage the marker recorded on entry: "" | migrated | complete
+#   STACK_STARTED     1 once start_v1_stack has brought the stack up in this run
+#   CONCEPTS_IMPORTED 1 once a dictionary has actually been loaded in this run
+SUMMARY_MODE="upgrade"
+INSTALL_STAGE=""
+STACK_STARTED="0"
+CONCEPTS_IMPORTED="0"

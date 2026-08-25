@@ -87,6 +87,8 @@ start_v1_stack() {
     ( cd "$RESTORE_DIR" && as_root $DOCKER_COMPOSE up -d )
     success "eRegister ${TARGET_VERSION} started via docker compose."
   fi
+  # Read by next_steps: only a run that started the stack may say so.
+  STACK_STARTED="1"
   # The reports service is separate (and often profile-gated); start it too so
   # dashboards/reports are available. Runs regardless of which path launched the
   # main stack above.

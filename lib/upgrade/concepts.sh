@@ -222,6 +222,8 @@ import_concepts() {
   # problem.
   if as_root cat "$CONCEPTS_SQL" | _concepts_mysql; then
     success "Concept dictionary imported into ${DB_NAME}."
+    # Read by next_steps: only a run that imported may report an import.
+    CONCEPTS_IMPORTED="1"
   else
     error "Concept import failed."
     if [ -n "${CONCEPTS_PREIMPORT_SQL:-}" ]; then
