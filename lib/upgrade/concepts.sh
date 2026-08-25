@@ -184,10 +184,11 @@ _concepts_backup() {
 }
 
 # -----------------------------------------------------------------------------
-# import_concepts — top-level entry, called from main() after the upgrade has
-# been finalized and from the standalone import-concepts.sh.
-# Returns non-zero on failure; callers treat that as advisory (the stack is
-# already up, and the import can be retried by hand).
+# import_concepts — the import itself. Entered from ./import-concepts.sh, which
+# is what both the scheduled runner and a human invoke; install.sh no longer
+# calls it inline (see run_post_install there for why).
+# Returns non-zero on failure; callers treat that as advisory — the stack is
+# unaffected, and the import can be retried at any time.
 # -----------------------------------------------------------------------------
 import_concepts() {
   step "Concept dictionary import"
@@ -487,6 +488,74 @@ _concepts_schedule() {
 }
 
 # -----------------------------------------------------------------------------
+# The DELAYED FIRST RUN.
+#
+# The dictionary is deliberately not imported at the end of the upgrade. The
+# stack has only just been started there, and while openmrsdb answers early, the
+# instance behind it needs 30+ minutes (often hours on site hardware) before the
+# import is worth doing — so an inline import either blocked the installer or
+# skipped for nothing. Instead the job is installed and given ONE shot a few
+# hours out; the daily job takes over from there.
+#
+# Backends, in order: a transient systemd timer (one command, nothing to write
+# or clean up), then `at`. Neither available is not a failure — the daily job is
+# the backstop, and that is what the message says.
+# -----------------------------------------------------------------------------
+_concepts_first_run_when() {
+  # Human-readable local time of the first run; falls back to a relative label.
+  local at; at=$(( $(date +%s) + $1 ))
+  date -d "@${at}" '+%Y-%m-%d %H:%M %Z' 2>/dev/null \
+    || date -r "$at" '+%Y-%m-%d %H:%M %Z' 2>/dev/null \
+    || printf '%sh from now' "$(( $1 / 3600 ))"
+}
+
+_concepts_schedule_first_run() {
+  local secs="$CONCEPT_IMPORT_FIRST_DELAY_SEC" unit="${CONCEPT_IMPORT_UNIT}-first" when
+
+  if [ "${CONCEPT_IMPORT_FIRST_RUN:-1}" != "1" ]; then
+    info "No delayed first import (EREGISTER_CONCEPT_IMPORT_FIRST_RUN=0);"
+    info "the daily job at ${CONCEPT_IMPORT_CRON} will be the first one."
+    return 0
+  fi
+  when="$(_concepts_first_run_when "$secs")"
+
+  if has_systemd; then
+    # Clear any timer a previous install left pending or failed, so --unit is
+    # free to be created again.
+    as_root systemctl stop "${unit}.timer" >/dev/null 2>&1 || true
+    as_root systemctl reset-failed "$unit" "${unit}.timer" >/dev/null 2>&1 || true
+    if as_root systemd-run --quiet --unit="$unit" --on-active="$secs" \
+         --timer-property=AccuracySec=1min \
+         --description="eRegister v1 — first concept-dictionary import" \
+         "$CONCEPT_IMPORT_RUNNER" >/dev/null 2>&1; then
+      success "First concept import scheduled for ~${when}."
+      info "  Check:  systemctl list-timers ${unit}.timer"
+      info "  Cancel: sudo systemctl stop ${unit}.timer"
+      info "  Log:    ${CONCEPT_IMPORT_LOG}"
+      warn  "It is a transient timer: a reboot before then drops it, and the"
+      warn  "daily job (${CONCEPT_IMPORT_CRON}) becomes the first import instead."
+      return 0
+    fi
+    warn "systemd-run could not schedule the one-off first import."
+  fi
+
+  if command -v at >/dev/null 2>&1; then
+    if printf '%s\n' "$CONCEPT_IMPORT_RUNNER" \
+         | as_root at now + $(( (secs + 59) / 60 )) minutes >/dev/null 2>&1; then
+      success "First concept import queued with 'at' for ~${when} (list it with: atq)."
+      return 0
+    fi
+    warn "'at' could not queue the one-off first import."
+  fi
+
+  # Not a failure: the job IS installed, it just starts a bit later than asked.
+  warn "No way to schedule a one-off run on this host (no systemd, no 'at')."
+  warn "The daily job (${CONCEPT_IMPORT_CRON}) will take the first import, or run"
+  warn "it yourself once the instance is up:  sudo ${CONCEPT_IMPORT_RUNNER}"
+  return 0
+}
+
+# -----------------------------------------------------------------------------
 # install_concept_import — top-level entry: install the runner and schedule it.
 # Called from install.sh after the first import, and from
 # ./import-concepts.sh --schedule.
@@ -504,6 +573,11 @@ install_concept_import() {
   info "  • picks the newest ${CONCEPTS_SQL_PATTERN} in it"
   info "  • imports it into ${DB_SERVICE}:${DB_NAME} — ONLY if its content changed"
   info "It is separate from the daily form import, and leaves it untouched."
+  if [ "${CONCEPT_IMPORT_FIRST_RUN:-1}" = "1" ]; then
+    info "Nothing is imported right now: the instance has only just been started"
+    info "and needs hours to finish booting. The FIRST import is scheduled for"
+    info "~$(( CONCEPT_IMPORT_FIRST_DELAY_SEC / 3600 ))h from now, and the daily job carries on from there."
+  fi
   warn "An import replaces the concept_*/drug* tables (a pre-import backup is taken"
   warn "first), and the new dictionary is only visible once the EMR restarts."
 
@@ -513,6 +587,7 @@ install_concept_import() {
   _concepts_ensure_toolkit || return 1
   _concepts_write_runner
   _concepts_schedule || return 1
+  _concepts_schedule_first_run
 
   if [ "$CONCEPT_IMPORT_RESTART_EMR" = "1" ]; then
     warn "EREGISTER_CONCEPT_IMPORT_RESTART_EMR=1: the job will restart ${EMR_SERVICE} after"

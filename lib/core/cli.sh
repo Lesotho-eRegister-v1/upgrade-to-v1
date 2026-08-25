@@ -14,9 +14,11 @@ parse_args() {
       --force)        FORCE="1" ;;
       --install-dir)  INSTALL_BASE="${2:?--install-dir needs a value}"; shift ;;
       --target-ref)   TARGET_REF="${2:?--target-ref needs a value}"; shift ;;
-      # Covers BOTH halves of "concepts": the one-shot import at the end of an
-      # upgrade and the daily job that keeps the dictionary current. Leaving the
-      # job behind after --no-concepts would be a surprise.
+      # Covers BOTH halves of "concepts": the delayed first import and the daily
+      # job that keeps the dictionary current — they are installed together, so
+      # leaving either behind after --no-concepts would be a surprise.
+      # IMPORT_CONCEPTS is the standalone importer's own default; the installer
+      # no longer imports inline at all.
       --no-concepts)  IMPORT_CONCEPTS="0"; CONCEPT_IMPORT="0" ;;
       --no-forms)     IMPORT_FORMS="0" ;;
       --no-color)     USE_COLOR="no" ;;
@@ -52,6 +54,20 @@ resolve_config() {
   UPGRADE_REPO_DIR="${EREGISTER_UPGRADE_REPO_DIR:-${V1_DIR}/upgrade-to-v1}"
 }
 
+# One line for print_config: when the concept-dictionary job runs, and whether
+# it gets the delayed first run. Lives here rather than inline in the heredoc —
+# the nesting was three conditionals deep and printed "disabled -> <runner>".
+concept_job_label() {
+  if [ "$CONCEPT_IMPORT" != "1" ]; then
+    printf 'disabled'
+  elif [ "$CONCEPT_IMPORT_FIRST_RUN" = "1" ]; then
+    printf 'first run ~%sh after install, then daily %s -> %s' \
+           "$(( CONCEPT_IMPORT_FIRST_DELAY_SEC / 3600 ))" "$CONCEPT_IMPORT_CRON" "$CONCEPT_IMPORT_RUNNER"
+  else
+    printf 'daily %s -> %s' "$CONCEPT_IMPORT_CRON" "$CONCEPT_IMPORT_RUNNER"
+  fi
+}
+
 print_config() {
   local current; current="$(read_current_version)"
   step "Resolved configuration"
@@ -68,8 +84,8 @@ print_config() {
   ${C_DIM}Install base${C_RESET}   : ${INSTALL_BASE}
   ${C_DIM}v1 dir${C_RESET}         : ${V1_DIR}
   ${C_DIM}eRegister_HOME${C_RESET} : ${eRegister_HOME}
-  ${C_DIM}Concept import${C_RESET} : $( [ "$IMPORT_CONCEPTS" = "1" ] && echo "${CONCEPTS_SQL:-${CONCEPTS_DIR}/${CONCEPTS_SQL_PATTERN} (newest)} -> ${DB_SERVICE}:${DB_NAME}" || echo "disabled (--no-concepts)" )
-  ${C_DIM}Concept job${C_RESET}    : $( [ "$CONCEPT_IMPORT" = "1" ] && echo "daily ${CONCEPT_IMPORT_CRON} -> ${CONCEPT_IMPORT_RUNNER}" || echo "disabled" )
+  ${C_DIM}Concept dict${C_RESET}   : $( [ "$CONCEPT_IMPORT" = "1" ] && echo "${CONCEPTS_SQL:-${CONCEPTS_DIR}/${CONCEPTS_SQL_PATTERN} (newest)} -> ${DB_SERVICE}:${DB_NAME}" || echo "disabled (--no-concepts)" )
+  ${C_DIM}Concept job${C_RESET}    : $( concept_job_label )
   ${C_DIM}Form import${C_RESET}    : $( [ "$IMPORT_FORMS" = "1" ] && echo "${FORMS_DIR} -> ${BAHMNI_URL} as '${BAHMNI_USER}' (daily: ${FORM_IMPORT_CRON})" || echo "disabled (--no-forms)" )
   ${C_DIM}Old stack${C_RESET}      : ${OLD_DOCKER_DIR}
   ${C_DIM}EMR container${C_RESET}  : ${EMR_CONTAINER}

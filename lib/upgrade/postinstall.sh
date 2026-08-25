@@ -93,7 +93,10 @@ resolve_install_stage() {
   stage="$(read_stage)"
   if [ "$stage" != "legacy" ]; then printf '%s' "$stage"; return 0; fi
 
-  if [ "${IMPORT_CONCEPTS:-1}" != "1" ] || [ -f "$CONCEPT_IMPORT_STATE" ]; then
+  # What install.sh owes for concepts is the JOB, not a finished import — the
+  # first import happens hours later, on its own. A state file still counts:
+  # sites installed by the older inline-import version have one.
+  if [ "${CONCEPT_IMPORT:-1}" != "1" ] || [ -f "$CONCEPT_IMPORT_RUNNER" ] || [ -f "$CONCEPT_IMPORT_STATE" ]; then
     concepts_done=1
   fi
   if [ "${IMPORT_FORMS:-1}" != "1" ] || [ -f "$FORM_IMPORT_STATE" ] || [ -f "$FORM_IMPORT_RUNNER" ]; then
@@ -175,7 +178,25 @@ _next_steps_concepts_line() {
       return 0
     fi
   fi
-  printf 'has NOT been imported yet — run ./import-concepts.sh, or leave it to the daily job.'
+  if [ -f "$CONCEPT_IMPORT_RUNNER" ]; then
+    printf 'has NOT been imported yet, and that is deliberate — the instance\n    needs hours to finish booting first. The FIRST import runs on its own\n    ~%sh from now; import it sooner with ./import-concepts.sh if you want.' \
+           "$(( CONCEPT_IMPORT_FIRST_DELAY_SEC / 3600 ))"
+    return 0
+  fi
+  printf 'has NOT been imported on this host.'
+}
+
+_next_steps_concepts_schedule_line() {
+  # Only describe a schedule that exists. The runner is what both the daily
+  # timer and the one-off first run invoke, so its absence means nothing is
+  # keeping the dictionary current.
+  if [ -f "$CONCEPT_IMPORT_RUNNER" ]; then
+    printf 'From here on it keeps itself current: %s runs daily\n    (%s) via %s, pulls the concepts\n    repo and imports a dump ONLY when its content has changed.\n    Check now:   sudo %s\n    Log:         %s' \
+           "$CONCEPT_IMPORT_UNIT" "$CONCEPT_IMPORT_CRON" "$CONCEPT_IMPORT_RUNNER" \
+           "$CONCEPT_IMPORT_RUNNER" "$CONCEPT_IMPORT_LOG"
+  else
+    printf 'Nothing is keeping the dictionary current on this host — no import job\n    is installed. Add it with:  ./import-concepts.sh --schedule'
+  fi
 }
 
 _next_steps_forms_line() {
@@ -239,11 +260,7 @@ $(_next_steps_rule)
   Concept dictionary:
     ${CONCEPTS_SQL:-newest ${CONCEPTS_SQL_PATTERN} in ${CONCEPTS_DIR}}
     $(_next_steps_concepts_line)
-    From here on it keeps itself current: ${CONCEPT_IMPORT_UNIT} runs daily
-    (${CONCEPT_IMPORT_CRON}) via ${CONCEPT_IMPORT_RUNNER}, pulls the concepts
-    repo and imports a dump ONLY when its content has changed.
-    Check now:   sudo ${CONCEPT_IMPORT_RUNNER}
-    Log:         ${CONCEPT_IMPORT_LOG}
+    $(_next_steps_concepts_schedule_line)
     Import by hand at any time:
          curl -fsSL ${RAW_BASE}/import-concepts.sh | bash
        (or, from the upgrade repo:  ./import-concepts.sh)

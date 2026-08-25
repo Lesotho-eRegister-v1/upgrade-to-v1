@@ -118,7 +118,7 @@ lib/
     ├── migrate.sh               # shutdown_old_stack, fetch_repos, run_restore
     ├── rollback.sh              # rollback
     ├── postinstall.sh           # post_verify, next_steps
-    ├── concepts.sh              # import_concepts (concept dictionary -> openmrsdb)
+    ├── concepts.sh              # import_concepts + the scheduled/delayed job
     ├── forms.sh                 # install_form_import (clinical-obs-forms -> EMR, daily)
     ├── autopull.sh              # install_auto_pull (systemd timer / cron.d)
     └── catchup.sh               # catch_up (reconcile a deployed site + report)
@@ -128,11 +128,36 @@ bin/
 
 # Importing the concept dictionary
 
-At the end of a run the installer loads the concept dictionary from the
-`eregister_concepts_release_v1` clone
-(`/var/lib/v1/eregister_concepts_release_v1/omrs_concept_dictionary_v1.sql`)
-into the `openmrs` database inside the `openmrsdb` container — the scripted
-version of that repo's manual `docker cp` + `mysql source` instructions.
+The concept dictionary lives in the `eregister_concepts_release_v1` clone
+(`/var/lib/v1/eregister_concepts_release_v1/omrs_concept_dictionary_*.sql`) and
+is loaded into the `openmrs` database inside the `openmrsdb` container — the
+scripted version of that repo's manual `docker cp` + `mysql source`
+instructions.
+
+**The installer does not import it.** When an upgrade finishes, the stack has
+only just been started: `openmrsdb` answers early, but the instance behind it
+needs 30+ minutes — hours on site hardware — before importing a dictionary is
+worth doing. So instead of importing inline, the installer installs the import
+job and gives it **one delayed run, 3 hours out**, after which
+[the daily job](#the-daily-concept-dictionary-job) keeps it current.
+
+| | |
+| --- | --- |
+| with systemd | a transient timer, `eregister-concept-import-first.timer` |
+| without systemd | an `at` job |
+| neither available | nothing one-off; the daily job takes the first import |
+
+```bash
+systemctl list-timers eregister-concept-import-first.timer   # when it fires
+sudo systemctl stop eregister-concept-import-first.timer     # cancel it
+sudo /usr/local/bin/eregister-concept-import.sh              # or just run it now
+```
+
+The transient timer does not survive a reboot; if the box restarts before it
+fires, the daily job becomes the first import. Tune it with
+`EREGISTER_CONCEPT_IMPORT_FIRST_DELAY_SEC` (default `10800`) or turn it off with
+`EREGISTER_CONCEPT_IMPORT_FIRST_RUN=0`. `--no-concepts` installs no concept job
+at all.
 
 The dump is a mysqldump with `DROP TABLE IF EXISTS` + `CREATE TABLE` for the
 `concept_*` and `drug*` tables, so it **replaces** them rather than merging.
@@ -175,6 +200,7 @@ Its own job, separate from the daily form import and independent of it. One run:
 | --- | --- |
 | `/usr/local/bin/eregister-concept-import.sh` | the runner cron/systemd calls |
 | `eregister-concept-import.timer` or `/etc/cron.d/eregister-concept-import` | the daily schedule (04:30) |
+| `eregister-concept-import-first.timer` | the one-off first run, ~3h after install (transient) |
 | `/var/lib/v1/.eregister_concept_import_state` | sha256 + filename + date of the last import |
 | `/var/log/eregister-concept-import.log` | every run |
 
@@ -216,14 +242,12 @@ OpenMRS caches concepts, so restart the EMR service afterwards for the new
 dictionary to show up:
 `docker compose restart openmrs` (from `/var/lib/v1/bahmni-docker-ls/bahmni-standard`).
 
-Skip or tune it with `--no-concepts` / `EREGISTER_IMPORT_CONCEPTS=0` and
-`EREGISTER_CONCEPTS_SQL_NAME` (dump filename).
+Skip or tune it with `--no-concepts`, `EREGISTER_CONCEPTS_SQL_NAME` (dump
+filename), and the first-run knobs above.
 
-The importer probes `openmrsdb` **once**; it does not wait on it. A v1 stack
-that has just been started needs 30+ minutes before its database answers, so
-straight after an upgrade the import is simply skipped with a message rather
-than blocking the run. Load the dictionary once the stack is up with
-`./import-concepts.sh`, or leave it to the daily job.
+Whenever it does run, the importer probes `openmrsdb` **once**; it does not wait
+on it. If the database is not answering yet it says so and skips, rather than
+blocking — run `./import-concepts.sh` again later, or leave it to the daily job.
 
 # Importing the clinical observation forms
 

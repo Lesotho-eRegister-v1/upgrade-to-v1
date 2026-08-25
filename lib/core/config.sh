@@ -111,6 +111,15 @@ CONCEPT_IMPORT_CRON="${EREGISTER_CONCEPT_IMPORT_CRON:-30 4 * * *}"
 # The runner refreshes the concepts clone itself before looking at it, so the job
 # still works on a host where auto-pull was declined. 0 = import what is on disk.
 CONCEPT_IMPORT_SELF_PULL="${EREGISTER_CONCEPT_IMPORT_SELF_PULL:-1}"
+# The FIRST import is deferred rather than done inline at the end of the upgrade.
+# A stack that has just been started is not ready for it: openmrsdb answers long
+# before the EMR is up, but the dictionary only makes sense once the instance has
+# finished booting and the OCL import has run — hours, not minutes, on the
+# hardware these sites use. So the installer schedules one delayed run and lets
+# the daily job take over from there. 0 = no delayed run (the daily job is then
+# the first one). The delay is in SECONDS so every backend can use it verbatim.
+CONCEPT_IMPORT_FIRST_RUN="${EREGISTER_CONCEPT_IMPORT_FIRST_RUN:-1}"
+CONCEPT_IMPORT_FIRST_DELAY_SEC="${EREGISTER_CONCEPT_IMPORT_FIRST_DELAY_SEC:-10800}"   # 3h
 # OpenMRS caches concepts, so a fresh dictionary is invisible until the EMR is
 # restarted. Off by default: that is 30+ minutes of downtime, which is not a
 # thing to do unattended without saying so. When 0, the log and the catch-up

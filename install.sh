@@ -24,29 +24,34 @@
 #                        name, so a list is usually what you want:
 #                          --target-ref Bokang-changes,main
 #                        Default: empty (each repo uses its own default ref).
-#   --no-concepts        Skip the post-install concept-dictionary import AND the
-#                        daily concept-import job.
+#   --no-concepts        Do not install the concept-dictionary job at all — no
+#                        delayed first import, no daily job.
 #   --no-forms           Skip the post-install clinical form import (and its
 #                        daily job).
 #   --no-color           Disable ANSI colors.
 #   -h, --help           Show help and exit.
 #
-#   After the v1 stack starts, the concept dictionary shipped in
-#   eregister_concepts_release_v1 (omrs_concept_dictionary_v1.sql) is imported
-#   into the 'openmrs' database of the openmrsdb container. It replaces the
-#   concept_*/drug* tables, so the tables it touches are dumped to
-#   <base>/v1/bahmni-backup/concepts-preimport-<stamp>.sql first. Control it:
-#     EREGISTER_IMPORT_CONCEPTS=0      Skip the import (--no-concepts skips the
-#                                      daily job as well; this variable does not).
-#     EREGISTER_CONCEPTS_SQL_NAME      Dump filename inside the concepts repo.
-#   The import probes openmrsdb ONCE. A stack that has just been started needs
-#   30+ minutes before its database answers, so the import is simply skipped
-#   there (with a message) rather than blocking the run — load it later with
-#   ./import-concepts.sh, or leave it to the daily job.
-#   Re-run it on its own at any time with ./import-concepts.sh.
+#   The concept dictionary shipped in eregister_concepts_release_v1
+#   (omrs_concept_dictionary_*.sql) is NOT imported by this script. The stack has
+#   only just been started when the upgrade ends: openmrsdb answers early, but
+#   the instance behind it needs 30+ minutes — hours on site hardware — before
+#   importing a dictionary is worth doing, and the import replaces the
+#   concept_*/drug* tables (a pre-import copy goes to
+#   <base>/v1/bahmni-backup/concepts-preimport-<stamp>.sql first).
 #
-#   The installer then offers a DAILY job of its own for the dictionary —
-#   separate from the form import: it fast-forwards eregister_concepts_release_v1
+#   Instead the installer installs the import job and gives it ONE delayed run,
+#   3 hours out by default, after which the daily job below keeps the dictionary
+#   current. The delayed run is a transient systemd timer
+#   (eregister-concept-import-first.timer), or an `at` job where systemd is
+#   absent; if neither exists the daily job simply takes the first import.
+#     EREGISTER_CONCEPT_IMPORT_FIRST_RUN=0        No delayed first run.
+#     EREGISTER_CONCEPT_IMPORT_FIRST_DELAY_SEC    Delay in seconds (default 10800).
+#     EREGISTER_CONCEPTS_SQL_NAME                 Dump filename in the concepts repo.
+#   Import it yourself at any time with ./import-concepts.sh — that is also what
+#   the scheduled runner calls.
+#
+#   The job itself is a DAILY one, separate from the form import: it
+#   fast-forwards eregister_concepts_release_v1
 #   and imports the newest omrs_concept_dictionary_*.sql it holds into the
 #   openmrs database, but only when that dump's content differs from the one
 #   already loaded (sha256, recorded in <base>/v1/.eregister_concept_import_state).
@@ -455,15 +460,17 @@ run_migration() {
 # of a fresh upgrade and on its own when a previous run was interrupted here.
 # =============================================================================
 run_post_install() {
-  # --- load the v1 concept dictionary -------------------------------------
-  # Needs only openmrsdb, which is up well before the EMR finishes booting.
-  if ! import_concepts; then
-    warn "Concept dictionary NOT imported. Run it again later with: ./import-concepts.sh"
-  fi
-
-  # Keep it current from here on: its own daily job, independent of the form
-  # import, that pulls the concepts repo and imports a dump only when the
-  # dictionary has actually changed.
+  # --- the concept dictionary ---------------------------------------------
+  # NOT imported here. The stack has only just been started: openmrsdb answers
+  # early, but the instance behind it needs 30+ minutes — often hours on site
+  # hardware — before importing a dictionary is worth doing. Doing it inline
+  # therefore either blocked the run or skipped for nothing, and either way it
+  # asked the operator to authorise replacing the concept_*/drug* tables at the
+  # least informative possible moment.
+  #
+  # So: install the job, give it ONE delayed run a few hours out
+  # (CONCEPT_IMPORT_FIRST_DELAY_SEC), and let the daily job carry on from there.
+  # ./import-concepts.sh still imports on demand, whenever you want it.
   if ! install_concept_import; then
     warn "Scheduled concept import NOT installed. Add it later with: ./import-concepts.sh --schedule"
   fi
