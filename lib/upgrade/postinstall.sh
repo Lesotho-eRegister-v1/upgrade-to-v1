@@ -44,14 +44,17 @@ post_verify() {
 #                    auto-update job) had not finished.
 #   stage=complete   the whole run finished.
 #
-# That distinction is the whole point of the file. Those post-install steps run
-# for a long time (the concept import alone waits on the DB and then loads a
-# multi-hundred-MB dump) and are easy to interrupt with a Ctrl-C or a dropped
-# ssh session. When the marker was a bare `touch` taken at verification time, an
-# interrupt anywhere in that window left a marker behind that said "installed",
-# and every later run of install.sh short-circuited on it: it printed a summary
-# of work it had not done and exited without finishing the steps that were still
-# outstanding. Recording the stage lets such a run be resumed instead.
+# That distinction is the whole point of the file. Those post-install steps load
+# a multi-hundred-MB dump and talk to an EMR that takes 30+ minutes to boot, so
+# they are easy to interrupt with a Ctrl-C or a dropped ssh session. When the
+# marker was a bare `touch` taken at verification time, an interrupt anywhere in
+# that window left a marker behind that said "installed", and every later run of
+# install.sh short-circuited on it: it printed a summary of work it had not done
+# and exited without finishing the steps that were still outstanding.
+#
+# Recording the stage is what lets a re-run tell the two apart: stage=complete
+# short-circuits, stage=migrated redoes the upgrade (reusing the backup already
+# in BACKUP_DIR) and then finishes the outstanding steps.
 # -----------------------------------------------------------------------------
 mark_stage() {
   local stage="$1" tmp
@@ -122,17 +125,14 @@ persist_env() {
 # -----------------------------------------------------------------------------
 # next_steps — the closing reference card.
 #
-# It is printed after three different kinds of run (SUMMARY_MODE), and it must
+# It is printed after two different kinds of run (SUMMARY_MODE), and it must
 # describe THIS run honestly in each of them:
 #   upgrade   the migration ran here — past tense is earned.
-#   resume    only the post-install steps ran; the stack was started earlier.
 #   existing  nothing was changed; this is a reference card, not a report.
 # The helpers below supply the lines that differ.
 # -----------------------------------------------------------------------------
 _next_steps_headline() {
   case "${SUMMARY_MODE:-upgrade}" in
-    resume)   printf '%s ✔ %s %s — post-install steps completed%s' \
-                     "$C_OK" "$APP_NAME" "$TARGET_VERSION" "$C_RESET" ;;
     existing) printf '%s ℹ %s %s is already installed — nothing was changed%s' \
                      "$C_INFO" "$APP_NAME" "$TARGET_VERSION" "$C_RESET" ;;
     *)        printf '%s ✔ %s upgraded to %s%s' \

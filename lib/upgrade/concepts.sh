@@ -23,8 +23,7 @@
 #
 # Depends on: logging, prompt (confirm), as_root() (privilege).
 # Uses config: CONCEPTS_DIR, CONCEPTS_SQL, RESTORE_DIR, BACKUP_DIR,
-#              DOCKER_COMPOSE, DB_SERVICE, DB_NAME, DB_USER, DB_PASS,
-#              CONCEPTS_DB_WAIT.
+#              DOCKER_COMPOSE, DB_SERVICE, DB_NAME, DB_USER, DB_PASS.
 # =============================================================================
 
 # -----------------------------------------------------------------------------
@@ -122,23 +121,23 @@ _concepts_db_ready() {
 }
 
 # -----------------------------------------------------------------------------
-# _concepts_wait_for_db — poll until the DB accepts queries, up to
-# CONCEPTS_DB_WAIT seconds. The stack is usually still booting when this runs
-# (openmrsdb comes up long before the EMR does), hence the wait.
+# _concepts_require_db — ONE connectivity probe. No polling.
+#
+# This used to poll for up to five minutes, on the theory that the import runs
+# while the stack is still booting. In practice that turned a skippable step
+# into a five-minute hang whenever openmrsdb was not coming up at all — and the
+# import is not on the critical path: the dictionary can be loaded at any point
+# afterwards with ./import-concepts.sh, and the daily job would pick it up in
+# any case. So ask once, and if the answer is no, say why and let the caller
+# move on.
 # -----------------------------------------------------------------------------
-_concepts_wait_for_db() {
-  local waited=0 interval=5
+_concepts_require_db() {
   if _concepts_db_ready; then return 0; fi
-  info "Waiting for ${DB_SERVICE}:${DB_NAME} to accept connections (up to ${CONCEPTS_DB_WAIT}s)…"
-  while [ "$waited" -lt "$CONCEPTS_DB_WAIT" ]; do
-    sleep "$interval"
-    waited=$(( waited + interval ))
-    if _concepts_db_ready; then
-      success "Database reachable after ${waited}s."
-      return 0
-    fi
-  done
-  error "Database '${DB_NAME}' in service '${DB_SERVICE}' did not become reachable within ${CONCEPTS_DB_WAIT}s."
+  warn "${DB_SERVICE}:${DB_NAME} is not accepting connections right now."
+  warn "A freshly started v1 stack needs 30+ minutes before its database answers,"
+  warn "so this is expected straight after an upgrade — it is not an error."
+  warn "Skipping the concept dictionary; nothing else in this run depends on it."
+  warn "Load it once the stack is up with:  ./import-concepts.sh"
   return 1
 }
 
@@ -202,13 +201,15 @@ import_concepts() {
   [ -d "$RESTORE_DIR" ] || { error "v1 stack dir not found: ${RESTORE_DIR}. Has the upgrade run?"; return 1; }
   _concepts_resolve_sql || return 1
 
+  # Reachability first, so a database that is still booting costs one probe
+  # rather than a prompt to replace tables we could not touch anyway.
+  _concepts_require_db || return 1
+
   warn "This REPLACES the concept dictionary in the '${DB_NAME}' database with"
   warn "${CONCEPTS_SQL}."
   warn "The dump drops and recreates the concept_*/drug* tables — including"
   warn "drug_order — so any rows those tables currently hold are replaced."
   confirm "Import the v1 concept dictionary now?" || { warn "Concept import skipped by user."; return 0; }
-
-  _concepts_wait_for_db || return 1
 
   if ! _concepts_backup; then
     warn "Continuing without a pre-import backup of the concept tables."

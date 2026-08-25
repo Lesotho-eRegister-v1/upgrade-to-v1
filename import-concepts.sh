@@ -35,7 +35,8 @@
 #   EREGISTER_DB_NAME          database             (default openmrs)
 #   EREGISTER_DB_PASS          mysql password (else the container's MYSQL_ROOT_PASSWORD)
 #   EREGISTER_CONCEPTS_SQL_NAME  dump filename inside the concepts repo
-#   EREGISTER_CONCEPTS_DB_WAIT   seconds to wait for openmrsdb (default 300)
+#   (openmrsdb is probed once, not waited on: a stack that has just started
+#    needs 30+ minutes before its database answers — re-run this then.)
 ###############################################################################
 
 set -euo pipefail

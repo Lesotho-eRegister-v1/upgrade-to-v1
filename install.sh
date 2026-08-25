@@ -39,7 +39,10 @@
 #     EREGISTER_IMPORT_CONCEPTS=0      Skip the import (--no-concepts skips the
 #                                      daily job as well; this variable does not).
 #     EREGISTER_CONCEPTS_SQL_NAME      Dump filename inside the concepts repo.
-#     EREGISTER_CONCEPTS_DB_WAIT       Seconds to wait for openmrsdb (default 300).
+#   The import probes openmrsdb ONCE. A stack that has just been started needs
+#   30+ minutes before its database answers, so the import is simply skipped
+#   there (with a message) rather than blocking the run — load it later with
+#   ./import-concepts.sh, or leave it to the daily job.
 #   Re-run it on its own at any time with ./import-concepts.sh.
 #
 #   The installer then offers a DAILY job of its own for the dictionary —
@@ -88,20 +91,22 @@
 #   The standalone updater is installed to /usr/local/bin/eregister-autopull.sh
 #   and can be run by hand for a one-off sync.
 #
-#   RESUMING AN INTERRUPTED RUN. <base>/v1/.eregister-upgrade-complete records
-#   how far the last run got, not merely that one happened:
+#   RE-RUNNING AFTER AN INTERRUPTED RUN.
+#   <base>/v1/.eregister-upgrade-complete records how far the last run got, not
+#   merely that one happened:
 #     stage=migrated   the stack was migrated, verified and started, but the
 #                      post-install steps (concept import, form import,
 #                      auto-updates) had not finished.
 #     stage=complete   the whole run finished.
-#   Those post-install steps run for a long time and are easy to interrupt, so a
-#   run that finds stage=migrated does NOT redo the migration: it picks up the
-#   outstanding steps where the last one stopped, leaving the stack running. Only
-#   stage=complete short-circuits with "nothing to do", and --force redoes
-#   everything from the 0.92 backup regardless. A marker written by an installer
-#   older than this one carries no stage; the outstanding steps are then inferred
-#   from what they leave on disk (the concept-import state file, the form-import
-#   runner).
+#   Only stage=complete short-circuits with "nothing to do". stage=migrated
+#   redoes the upgrade from the top — and the BACKUP ALREADY IN
+#   <base>/v1/bahmni-backup is reused, not retaken: it is the 0.92 data the
+#   restore needs, and once the old stack has been frozen it cannot be retaken
+#   at all. Note that the restore therefore reloads the openmrs database from
+#   that file, replacing anything entered since it was made. A marker written by
+#   an installer older than this one carries no stage; what is still outstanding
+#   is then inferred from what those steps leave on disk (the concept-import
+#   state file, the form-import runner).
 #
 #   ALREADY ON v1? Do not re-run this script to pick up changes made to it since
 #   your site was installed — it freezes the old stack, restores a backup and
@@ -127,8 +132,8 @@
 #     After adding or renaming anything under lib/ or bin/, PUSH IT, then run
 #     ./tests/check-published.sh — that is what the one-liners fetch.
 #   * ALL logic still lives in functions; main() is called on the LAST line.
-#     main() itself only decides WHICH of run_migration / run_post_install this
-#     run needs (see RESUMING above); the work lives in those two.
+#     main() itself only decides whether this run has anything to do (see
+#     RE-RUNNING above); the work lives in run_migration and run_post_install.
 ###############################################################################
 
 set -euo pipefail
@@ -377,20 +382,39 @@ run_migration() {
   ensure_dir "$BACKUP_DIR" "bahmni-backup folder"
 
   # --- backup BEFORE touching anything ------------------------------------
-  # Resolve a running EMR container first (configured name, then the known
-  # alternate, then ask the user). Only when one is found do we run the backup
-  # and its password prompt — with no container there is nothing to dump, so we
-  # treat it as a fresh install and skip straight on. Resolving up front also
-  # avoids prompting for a DB password we would never use (which would abort a
-  # --yes/CI run at prompt_db_password before we ever reach take_backup).
+  # A dump already sitting in BACKUP_DIR wins. It is the 0.92 data the restore
+  # needs, and after an earlier run has frozen the old stack it cannot be
+  # retaken at all — so it is REUSED rather than the run being written off as a
+  # fresh install with nothing to migrate. A new dump is taken only when the
+  # 0.92 EMR container is actually running and we do not already hold one (or
+  # --force says to replace it). Resolving the container inside that branch also
+  # avoids prompting for a DB password we would never use, which would abort a
+  # --yes/CI run at prompt_db_password before we ever reach take_backup.
   step "Backup"
-  if resolve_emr_container; then
+  local backup_size=""
+  if [ -s "$BACKUP_SQL" ]; then
+    backup_size="$(as_root du -h "$BACKUP_SQL" 2>/dev/null | awk '{print $1}' || true)"
+    [ -n "$backup_size" ] && backup_size=" (${backup_size})"
+  fi
+
+  if [ -s "$BACKUP_SQL" ] && [ "$FORCE" != "1" ]; then
+    success "Reusing the backup already in ${BACKUP_DIR}:"
+    success "  ${BACKUP_SQL}${backup_size}"
+    info "The restore below loads THIS file. To retake it instead, re-run with"
+    info "--force while the ${CURRENT_VERSION_DEFAULT} EMR container is running."
+  elif resolve_emr_container; then
     confirm_step "Take a MySQL backup of '${DB_NAME}' from container ${EMR_CONTAINER} into ${BACKUP_SQL}"
     prompt_db_password
     take_backup
+  elif [ -s "$BACKUP_SQL" ]; then
+    # --force asked for a fresh dump, but the 0.92 stack is gone — most likely
+    # frozen by an earlier run of this very script. The dump we already hold is
+    # still exactly the right input for the restore.
+    warn "--force asked for a fresh backup, but no running ${CURRENT_VERSION_DEFAULT} EMR container was found."
+    success "Reusing the backup already in ${BACKUP_DIR}: ${BACKUP_SQL}${backup_size}"
   else
-    warn "No running EMR container to back up — continuing as a fresh install (nothing to migrate)."
-    warn "However, if at a later stage I find the back in ${eRegister_HOME}, i'll use it  ."
+    warn "No running EMR container to back up, and no backup in ${BACKUP_DIR} —"
+    warn "continuing as a fresh install (nothing to migrate)."
     BACKUP_SKIPPED="1"
   fi
 
@@ -494,37 +518,25 @@ main() {
     INSTALL_STAGE=""
   fi
 
-  case "$INSTALL_STAGE" in
-    complete)
-      SUMMARY_MODE="existing"
-      success "${APP_NAME} ${TARGET_VERSION} is already installed (${DONE_MARKER}). Nothing to do."
-      info "To pick up later changes to these scripts on a live site, run ./catch-up.sh."
-      info "To redo the whole upgrade from the 0.92 backup, re-run with --force."
-      next_steps
-      exit 0
-      ;;
-    migrated)
-      SUMMARY_MODE="resume"
-      warn "A previous run migrated, verified and started the v1 stack, but stopped"
-      warn "before the post-install steps finished (${DONE_MARKER} records stage=migrated)."
-      warn "Resuming from there. The migration is NOT redone: nothing is stopped,"
-      warn "backed up, restored or restarted. Use --force to redo the whole upgrade."
-      if ! confirm "Resume the post-install steps (concept import, form import, auto-updates)?"; then
-        error "Aborted by user. Nothing was changed."
-        exit 1
-      fi
-      # Nothing was frozen in this run, so the error trap must not roll back.
-      UPGRADE_COMPLETE="1"
-      # The post-install steps drive docker compose, which run_migration would
-      # normally have resolved for them.
-      ensure_deps
-      ;;
-    *)
-      SUMMARY_MODE="upgrade"
-      run_migration
-      ;;
-  esac
+  if [ "$INSTALL_STAGE" = "complete" ]; then
+    SUMMARY_MODE="existing"
+    success "${APP_NAME} ${TARGET_VERSION} is already installed (${DONE_MARKER}). Nothing to do."
+    info "To pick up later changes to these scripts on a live site, run ./catch-up.sh."
+    info "To redo the whole upgrade from the backup in ${BACKUP_DIR}, re-run with --force."
+    next_steps
+    exit 0
+  fi
 
+  if [ "$INSTALL_STAGE" = "migrated" ]; then
+    warn "A previous run migrated the stack but stopped before the post-install"
+    warn "steps finished (${DONE_MARKER} records stage=migrated)."
+    warn "This run redoes the upgrade from the top. The backup already in"
+    warn "${BACKUP_DIR} is REUSED, not retaken — and the restore reloads"
+    warn "'${DB_NAME}' from it, replacing anything entered since it was made."
+  fi
+
+  SUMMARY_MODE="upgrade"
+  run_migration
   run_post_install
 
   # Only now is the install actually finished.

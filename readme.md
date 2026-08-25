@@ -58,18 +58,25 @@ far** it got, not merely that it ran:
 | `stage=` | meaning | what a re-run does |
 |---|---|---|
 | *(no file)* | nothing has been installed | runs the whole upgrade |
-| `migrated` | the stack was migrated, verified and **started**, but the post-install steps (concept import, form import, auto-updates) had not finished | **resumes** those steps — the migration is not redone, and nothing is stopped, restored or restarted |
+| `migrated` | the stack was migrated, verified and started, but the post-install steps (concept import, form import, auto-updates) had not finished | redoes the upgrade from the top, **reusing the backup already in `/var/lib/v1/bahmni-backup`**, then finishes the outstanding steps |
 | `complete` | the whole run finished | prints a reference card and exits with "nothing to do" |
 
-This matters because the post-install steps are the slow ones — the concept
-import alone waits on the database and then loads a multi-hundred-MB dump — so a
-Ctrl-C or a dropped ssh session lands in the middle of them more often than not.
-Re-running `install.sh` picks them up from there.
+Only `complete` short-circuits. Before this was recorded, a Ctrl-C or a dropped
+ssh session anywhere in the post-install steps left a bare marker that said
+"installed", and every later run exited on it — printing a summary of work it
+had never done.
 
-`--force` redoes everything from the 0.92 backup regardless of the stage. To
-reconcile a site that is already fully installed, use
-[`catch-up.sh`](#catching-an-early-site-up) instead — it does not touch the
-backup or the restore.
+**The backup is reused, never retaken.** `openmrsdb_backup.sql` is the 0.92 data
+the restore needs, and once an earlier run has frozen the old stack it cannot be
+retaken at all, so a re-run loads the file that is already there. That also
+means the restore reloads the `openmrs` database from it — anything entered
+since the backup was made is replaced. To reconcile a site *without* touching
+the backup or the restore, use [`catch-up.sh`](#catching-an-early-site-up)
+instead.
+
+`--force` redoes everything regardless of the stage; it retakes the backup only
+if the 0.92 EMR container is still running, and otherwise reuses the existing
+one.
 
 What to do next:
 1. cd /var/lib/v1/bahmni-docker-ls/bahmni-standard
@@ -209,9 +216,14 @@ OpenMRS caches concepts, so restart the EMR service afterwards for the new
 dictionary to show up:
 `docker compose restart openmrs` (from `/var/lib/v1/bahmni-docker-ls/bahmni-standard`).
 
-Skip or tune it with `--no-concepts` / `EREGISTER_IMPORT_CONCEPTS=0`,
-`EREGISTER_CONCEPTS_SQL_NAME` (dump filename) and `EREGISTER_CONCEPTS_DB_WAIT`
-(seconds to wait for `openmrsdb`, default 300).
+Skip or tune it with `--no-concepts` / `EREGISTER_IMPORT_CONCEPTS=0` and
+`EREGISTER_CONCEPTS_SQL_NAME` (dump filename).
+
+The importer probes `openmrsdb` **once**; it does not wait on it. A v1 stack
+that has just been started needs 30+ minutes before its database answers, so
+straight after an upgrade the import is simply skipped with a message rather
+than blocking the run. Load the dictionary once the stack is up with
+`./import-concepts.sh`, or leave it to the daily job.
 
 # Importing the clinical observation forms
 

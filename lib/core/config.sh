@@ -59,10 +59,6 @@ IMPORT_CONCEPTS="${EREGISTER_IMPORT_CONCEPTS:-1}"     # 0 (or --no-concepts) dis
 # to pin one exact filename.
 CONCEPTS_SQL_NAME="${EREGISTER_CONCEPTS_SQL_NAME:-}"
 CONCEPTS_SQL_PATTERN="${EREGISTER_CONCEPTS_SQL_PATTERN:-omrs_concept_dictionary*.sql}"
-# How long to wait for openmrsdb to accept connections before giving up. The
-# import runs while the rest of the stack is still booting, so some slack here.
-CONCEPTS_DB_WAIT="${EREGISTER_CONCEPTS_DB_WAIT:-300}"
-
 # Raw base for self-bootstrapping the standalone helpers (kept in sync with the
 # same default in install.sh / ocl-fix.sh / import-concepts.sh).
 RAW_BASE="${EREGISTER_RAW_BASE:-https://raw.githubusercontent.com/Lesotho-eRegister-v1/upgrade-to-v1/refs/heads/main}"
@@ -235,7 +231,7 @@ BACKUP_SKIPPED="0"
 CONCEPTS_PREIMPORT_SQL=""
 # What THIS run actually did — read by next_steps, which is printed after three
 # different kinds of run and must not report work it did not do.
-#   SUMMARY_MODE      upgrade | resume | existing (see next_steps)
+#   SUMMARY_MODE      upgrade | existing (see next_steps)
 #   INSTALL_STAGE     the stage the marker recorded on entry: "" | migrated | complete
 #   STACK_STARTED     1 once start_v1_stack has brought the stack up in this run
 #   CONCEPTS_IMPORTED 1 once a dictionary has actually been loaded in this run
