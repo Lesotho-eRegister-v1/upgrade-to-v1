@@ -25,8 +25,8 @@
 # WHAT IT CHECKS / FIXES
 #   1. the repos install.sh clones          -> clone if missing, fast-forward if behind
 #   2. the generated helper scripts         -> rewritten from the current modules
-#   3. the scheduled jobs (auto-pull, forms, concept dictionary)
-#                                           -> installed if absent
+#   3. the scheduled jobs (auto-pull, forms, concept dictionary, database
+#      backup)                              -> installed if absent
 #   4. the clinical form import             -> run (only changed forms deploy)
 #   5. the concept dictionary               -> reported, never auto-imported.
 #      It drops and recreates the concept_*/drug* tables, which is too blunt to
@@ -34,8 +34,11 @@
 #      daily concept job loads a changed dictionary on its own. What this
 #      reports is whether the dump on disk is the one in the database, and
 #      whether anything is scheduled to close that gap.
-#   6. running services + endpoints         -> reported (as found, pre-reload)
-#   7. the EMR service                      -> recreated last, so all of the
+#   6. the nightly database dumps           -> reported: how many, and how old
+#      the newest is. A backup job that has been failing for a fortnight looks
+#      exactly like one that is working until someone counts the files.
+#   7. running services + endpoints         -> reported (as found, pre-reload)
+#   8. the EMR service                      -> recreated last, so all of the
 #      above is actually loaded (skippable)
 #
 # The updating of THIS repo happens before the module is even sourced — see
@@ -43,7 +46,8 @@
 #
 # Depends on: logging, prompt (confirm), as_root() (privilege),
 #             git_clone_or_update() (verify), has_systemd() + auto-pull
-#             installers (autopull), the form installers (forms).
+#             installers (autopull), the form installers (forms), the database
+#             backup installers (dbbackup).
 # =============================================================================
 
 # Report rows, collected as "STATUS|CATEGORY|NAME|DETAIL" and rendered at the
@@ -276,6 +280,25 @@ catchup_helper_scripts() {
     _cu_row GAP script "$(basename "$FORM_IMPORT_RUNNER")" "could not be written"
   fi
 
+  # --- database backup script (independent of everything else here) --------
+  # Written before the form/concept rows below on purpose: this is the script a
+  # site needs when one of those two jobs has done something it should not have.
+  if [ "${DB_BACKUP:-1}" = "1" ]; then
+    local had_dbb=0
+    [ -x "$DB_BACKUP_RUNNER" ] && had_dbb=1
+    if _dbbackup_write_runner >/dev/null 2>&1; then
+      if [ "$had_dbb" = "1" ]; then
+        _cu_row OK script "$(basename "$DB_BACKUP_RUNNER")" "present, refreshed from this release"
+      else
+        _cu_row FIXED script "$(basename "$DB_BACKUP_RUNNER")" "was missing — installed"
+      fi
+    else
+      _cu_row GAP script "$(basename "$DB_BACKUP_RUNNER")" "could not be written"
+    fi
+  else
+    _cu_row SKIP script "$(basename "$DB_BACKUP_RUNNER")" "database backup disabled (--no-db-backup)"
+  fi
+
   # --- concept-dictionary runner (its own job, independent of forms) -------
   if [ "${CONCEPT_IMPORT:-1}" = "1" ]; then
     local had_crunner=0
@@ -368,6 +391,37 @@ catchup_schedules() {
       fi
     else
       _cu_row GAP cron "$FORM_IMPORT_UNIT" "not scheduled (declined)"
+    fi
+  fi
+
+  # --- daily database backup ------------------------------------------------
+  if [ "${DB_BACKUP:-1}" != "1" ]; then
+    _cu_row SKIP cron "$DB_BACKUP_UNIT" "disabled (--no-db-backup)"
+  elif state="$(_cu_schedule_state "$DB_BACKUP_UNIT")"; then
+    _cu_row OK cron "$DB_BACKUP_UNIT" "$state"
+  elif [ ! -x "$DB_BACKUP_RUNNER" ]; then
+    _cu_row GAP cron "$DB_BACKUP_UNIT" "not scheduled (its script is missing)"
+  elif ! _cu_scheduler_available; then
+    _cu_row GAP cron "$DB_BACKUP_UNIT" "no systemd and no /etc/cron.d — schedule '${DB_BACKUP_CRON} ${DB_BACKUP_RUNNER}' by hand"
+  else
+    warn "This site has NO scheduled backup of the openmrs database."
+    if confirm "Install the daily database backup (${DB_BACKUP_CRON}, keeping ${DB_BACKUP_KEEP} dumps)?"; then
+      if _dbbackup_schedule >/dev/null 2>&1 && state="$(_cu_schedule_state "$DB_BACKUP_UNIT")"; then
+        _cu_row FIXED cron "$DB_BACKUP_UNIT" "installed — ${state}"
+        # A site that had no backup job has no backups either, and the two jobs
+        # still to come in this run (the form import, the EMR reload) are
+        # exactly the sort of thing you would want one from before. So take the
+        # first dump now rather than leaving the site bare until 01:30. Only on
+        # a FIRST install — a site whose job was already scheduled has last
+        # night's dump and does not need another.
+        if confirm "Take the first database backup now (it has none)?"; then
+          run_db_backup || true
+        fi
+      else
+        _cu_row GAP cron "$DB_BACKUP_UNIT" "installation failed"
+      fi
+    else
+      _cu_row GAP cron "$DB_BACKUP_UNIT" "not scheduled (declined) — this site has no database backup"
     fi
   fi
 
@@ -506,6 +560,63 @@ catchup_concepts() {
     _cu_row OK concepts "database" "${DB_NAME}.concept holds ${count} rows"
   else
     _cu_row GAP concepts "database" "could not read a concept count — import may never have run (./import-concepts.sh)"
+  fi
+}
+
+# -----------------------------------------------------------------------------
+# catchup_db_backups — REPORT ONLY: are the nightly dumps actually happening?
+#
+# The schedule row above says a timer exists. This one says the timer is
+# producing files — which is a different question, and the one that matters. A
+# backup job whose openmrsdb service has been unreachable since a compose rename
+# fails silently every night; the only visible symptom is that the newest dump
+# stops moving. So: count the dumps, and age the newest one against the
+# schedule. Nothing here writes anything.
+# -----------------------------------------------------------------------------
+catchup_db_backups() {
+  step "Database backups (report only)"
+
+  if [ "${DB_BACKUP:-1}" != "1" ]; then
+    _cu_row SKIP backup "dumps" "left alone (--no-db-backup)"
+    return 0
+  fi
+  if ! as_root test -d "$DB_BACKUP_DIR"; then
+    _cu_row GAP backup "dumps" "no backup folder yet at ${DB_BACKUP_DIR} — run: sudo ${DB_BACKUP_RUNNER}"
+    return 0
+  fi
+
+  local count newest newest_epoch age_h now
+  # -type f, so the 'latest' symlink is not counted as a dump of its own.
+  count="$(as_root find "$DB_BACKUP_DIR" -maxdepth 1 -type f \
+             \( -name "${DB_NAME}_*.sql" -o -name "${DB_NAME}_*.sql.gz" \) 2>/dev/null \
+           | wc -l | tr -d ' ')"
+  if [ "${count:-0}" -eq 0 ]; then
+    _cu_row GAP backup "dumps" "${DB_BACKUP_DIR} holds no dumps — the job has never produced one (sudo ${DB_BACKUP_RUNNER})"
+    return 0
+  fi
+
+  # Names carry the timestamp, so the newest sorts last.
+  newest="$(as_root find "$DB_BACKUP_DIR" -maxdepth 1 -type f \
+              \( -name "${DB_NAME}_*.sql" -o -name "${DB_NAME}_*.sql.gz" \) 2>/dev/null \
+            | sort | tail -1)"
+  newest_epoch="$(as_root stat -c %Y "$newest" 2>/dev/null || as_root stat -f %m "$newest" 2>/dev/null || echo 0)"
+  now="$(date +%s)"
+  age_h=$(( ( now - ${newest_epoch:-0} ) / 3600 ))
+
+  # 36h, not 24h: a daily job plus systemd RandomizedDelaySec plus a host that
+  # was off overnight is not yet a broken backup.
+  if [ "${newest_epoch:-0}" -gt 0 ] && [ "$age_h" -le 36 ]; then
+    _cu_row OK backup "dumps" "${count} kept (limit ${DB_BACKUP_KEEP}); newest $(basename "$newest") $(as_root du -h "$newest" 2>/dev/null | awk '{print $1}'), ${age_h}h old"
+  else
+    _cu_row GAP backup "dumps" "${count} kept, but the newest ($(basename "$newest")) is ${age_h}h old — the job is failing; see ${DB_BACKUP_LOG}"
+  fi
+
+  # A .part file is a dump that failed its completeness check. It is left behind
+  # deliberately, and it is worth a row: it names the night the backup broke.
+  local partials
+  partials="$(as_root find "$DB_BACKUP_DIR" -maxdepth 1 -type f -name '*.part' 2>/dev/null | wc -l | tr -d ' ')"
+  if [ "${partials:-0}" -gt 0 ]; then
+    _cu_row GAP backup "partial dumps" "${partials} incomplete dump(s) (*.part) in ${DB_BACKUP_DIR} — a run was truncated; check ${DB_BACKUP_LOG}, then delete them"
   fi
 }
 
@@ -685,6 +796,14 @@ catchup_report() {
       by hand:     ${UPGRADE_REPO_DIR}/import-concepts.sh
     An imported dictionary is only visible after ${EMR_SERVICE} restarts.
 
+  Database backups — nightly (${DB_BACKUP_CRON}), kept ${DB_BACKUP_KEEP} deep:
+      take one now: sudo ${DB_BACKUP_RUNNER}
+      they live in: ${DB_BACKUP_DIR}
+      log:          ${DB_BACKUP_LOG}
+      restore one:  gzip -dc ${DB_BACKUP_DIR}/latest.sql.gz \\
+                      | (cd ${RESTORE_DIR} && ${DOCKER_COMPOSE:-docker compose} exec -T ${DB_SERVICE} mysql -u${DB_USER} -p)
+    These sit on this machine's own disk — copy them off it too.
+
   Run the form import by hand:   sudo ${FORM_IMPORT_RUNNER}
   Run the repo sync by hand:     sudo ${AUTO_PULL_SCRIPT}
   Logs:                          ${FORM_IMPORT_LOG}
@@ -708,6 +827,7 @@ catch_up() {
   catchup_schedules
   catchup_forms
   catchup_concepts
+  catchup_db_backups
   catchup_services      # health of the site AS FOUND, before anything is reloaded
   # `|| true` because catch-up.sh runs under `set -e`: this is the only step
   # that returns non-zero, and losing the report over it would be the worst

@@ -21,6 +21,9 @@ parse_args() {
       # no longer imports inline at all.
       --no-concepts)  IMPORT_CONCEPTS="0"; CONCEPT_IMPORT="0" ;;
       --no-forms)     IMPORT_FORMS="0" ;;
+      # Leaves the site with NO nightly database backup. Spelled out here
+      # because "--no-db-backup" reads like it only skips a step in this run.
+      --no-db-backup) DB_BACKUP="0" ;;
       --no-color)     USE_COLOR="no" ;;
       -h|--help)      usage; exit 0 ;;
       *) error "Unknown argument: $1"; usage; exit 2 ;;
@@ -52,6 +55,10 @@ resolve_config() {
   FORM_IMPORT_STATE="${V1_DIR}/.bahmni_form_import_state.json"
   FORM_IMPORT_WORKDIR="${V1_DIR}/form-import"
   UPGRADE_REPO_DIR="${EREGISTER_UPGRADE_REPO_DIR:-${V1_DIR}/upgrade-to-v1}"
+  # The nightly dumps. Beside the pre-upgrade backup rather than inside it:
+  # BACKUP_DIR holds the one file the restore reads, and burying a growing pile
+  # of rolling dumps in there makes that file harder to pick out, not easier.
+  DB_BACKUP_DIR="${EREGISTER_DB_BACKUP_DIR:-${V1_DIR}/db-backups}"
 }
 
 # One line for print_config: when the concept-dictionary job runs, and whether
@@ -87,6 +94,7 @@ print_config() {
   ${C_DIM}Concept dict${C_RESET}   : $( [ "$CONCEPT_IMPORT" = "1" ] && echo "${CONCEPTS_SQL:-${CONCEPTS_DIR}/${CONCEPTS_SQL_PATTERN} (newest)} -> ${DB_SERVICE}:${DB_NAME}" || echo "disabled (--no-concepts)" )
   ${C_DIM}Concept job${C_RESET}    : $( concept_job_label )
   ${C_DIM}Form import${C_RESET}    : $( [ "$IMPORT_FORMS" = "1" ] && echo "${FORMS_DIR} -> ${BAHMNI_URL} as '${BAHMNI_USER}' (daily: ${FORM_IMPORT_CRON})" || echo "disabled (--no-forms)" )
+  ${C_DIM}DB backup${C_RESET}      : $( [ "$DB_BACKUP" = "1" ] && echo "${DB_SERVICE}:${DB_NAME} -> ${DB_BACKUP_DIR} (daily: ${DB_BACKUP_CRON}, keep ${DB_BACKUP_KEEP})" || echo "disabled (--no-db-backup)" )
   ${C_DIM}Old stack${C_RESET}      : ${OLD_DOCKER_DIR}
   ${C_DIM}EMR container${C_RESET}  : ${EMR_CONTAINER}
   ${C_DIM}Privilege${C_RESET}      : $( [ -n "$SUDO" ] && echo "sudo" || echo "direct" )

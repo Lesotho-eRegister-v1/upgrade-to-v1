@@ -8,7 +8,7 @@
 #
 # USAGE
 #   ./install.sh [--yes] [--force] [--install-dir DIR] [--target-ref REF]
-#                [--no-concepts] [--no-forms] [--help]
+#                [--no-concepts] [--no-forms] [--no-db-backup] [--help]
 #
 # FLAGS / ENV
 #   -y, --yes            Non-interactive; assume "yes" to all prompts (CI/automation).
@@ -28,6 +28,8 @@
 #                        delayed first import, no daily job.
 #   --no-forms           Skip the post-install clinical form import (and its
 #                        daily job).
+#   --no-db-backup       Do not install the daily backup of the v1 database.
+#                        The site is then left with NO routine backup at all.
 #   --no-color           Disable ANSI colors.
 #   -h, --help           Show help and exit.
 #
@@ -84,6 +86,24 @@
 #   (0600). Re-run it on its own at any time with ./import-forms.sh, or
 #   sudo /usr/local/bin/eregister-form-import.sh.
 #
+#   The installer also schedules a DAILY BACKUP of the live v1 database. This is
+#   not the pre-upgrade dump in <base>/v1/bahmni-backup — that one is taken once,
+#   from the 0.92 stack, and is what the restore reads. This is the rolling
+#   backup of the site from here on: it dumps 'openmrs' out of the openmrsdb
+#   service, gzips it to <base>/v1/db-backups/openmrs_<stamp>.sql.gz, refuses to
+#   keep a dump that mysqldump did not finish writing, and deletes all but the
+#   newest 14. It runs at 01:30 — before the auto-pull, the form import and the
+#   concept import — so each night's dump predates whatever those did.
+#   Script: /usr/local/bin/eregister-db-backup.sh (run it by hand any time).
+#     EREGISTER_DB_BACKUP=0            Do not install it (same as --no-db-backup).
+#     EREGISTER_DB_BACKUP_CRON         cron schedule (default '30 1 * * *').
+#     EREGISTER_DB_BACKUP_ONCALENDAR   systemd OnCalendar (default '*-*-* 01:30:00').
+#     EREGISTER_DB_BACKUP_KEEP         how many dumps to retain (default 14).
+#     EREGISTER_DB_BACKUP_DIR          where they go (default <base>/v1/db-backups).
+#   The dumps sit on the SAME disk as the database, so they protect against a bad
+#   import or a deleted record, NOT against losing the machine. Copy that folder
+#   off the host as well.
+#
 #   After a successful upgrade, the installer offers to schedule a job that
 #   periodically pulls the v1 asset/config repos (standard-config-ls,
 #   implementer-interface-release, openmrs-v1-modules, clinical-obs-forms,
@@ -126,7 +146,7 @@
 #       lib/core/    config, logging, traps, prompt, cli
 #       lib/system/  platform, privilege, deps
 #       lib/upgrade/ verify, detect, backup, migrate, rollback, postinstall,
-#                    concepts, forms, autopull
+#                    concepts, forms, autopull, dbbackup
 #     Override the lib location with EREGISTER_LIB_DIR (e.g. for system install).
 #   * `curl | bash` still works: with no lib/ beside it, the script fetches the
 #     modules itself — first by shallow-cloning the repo (which also resolves
@@ -168,6 +188,7 @@ EREGISTER_MODULES=(
   upgrade/concepts.sh
   upgrade/forms.sh
   upgrade/autopull.sh
+  upgrade/dbbackup.sh
 )
 
 # -----------------------------------------------------------------------------
@@ -460,6 +481,17 @@ run_migration() {
 # of a fresh upgrade and on its own when a previous run was interrupted here.
 # =============================================================================
 run_post_install() {
+  # --- the daily database backup ------------------------------------------
+  # FIRST, deliberately. Everything else in this function installs something
+  # that will later write to the openmrs database on a schedule — the concept
+  # dictionary replaces whole tables, the form import creates form versions. The
+  # job that lets a site undo any of that should be in place before those jobs
+  # are, not after.
+  if ! install_db_backup; then
+    warn "Daily database backup NOT installed. Add it later with ./catch-up.sh,"
+    warn "or by re-running the installer with --force."
+  fi
+
   # --- the concept dictionary ---------------------------------------------
   # NOT imported here. The stack has only just been started: openmrsdb answers
   # early, but the instance behind it needs 30+ minutes — often hours on site

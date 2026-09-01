@@ -126,6 +126,32 @@ CONCEPT_IMPORT_FIRST_DELAY_SEC="${EREGISTER_CONCEPT_IMPORT_FIRST_DELAY_SEC:-1080
 # report say a restart is pending.
 CONCEPT_IMPORT_RESTART_EMR="${EREGISTER_CONCEPT_IMPORT_RESTART_EMR:-0}"
 
+# --- Daily backup of the live v1 database ------------------------------------
+# Distinct from the one-off pre-upgrade dump in BACKUP_SQL: this is the rolling
+# nightly backup of the running site, taken out of the openmrsdb service. See
+# lib/upgrade/dbbackup.sh.
+DB_BACKUP="${EREGISTER_DB_BACKUP:-1}"                 # 0 (or --no-db-backup) disables it
+DB_BACKUP_RUNNER="${EREGISTER_DB_BACKUP_RUNNER:-/usr/local/bin/eregister-db-backup.sh}"
+DB_BACKUP_LOG="${EREGISTER_DB_BACKUP_LOG:-/var/log/eregister-db-backup.log}"
+DB_BACKUP_UNIT="${EREGISTER_DB_BACKUP_UNIT:-eregister-db-backup}"
+# 01:30 — deliberately BEFORE the auto-pull (02:30), the form import (03:30) and
+# the concept import (04:30), so each night's dump shows the database as it was
+# before any of those ran. That is the state you want to go back to when one of
+# them turns out to have been a bad idea.
+DB_BACKUP_ONCALENDAR="${EREGISTER_DB_BACKUP_ONCALENDAR:-*-*-* 01:30:00}"
+DB_BACKUP_CRON="${EREGISTER_DB_BACKUP_CRON:-30 1 * * *}"
+# How many dumps to keep. Two weeks of daily dumps is enough to notice and undo
+# a bad night, and small enough that a site's disk survives it — the compressed
+# openmrs database is typically a few hundred MB.
+DB_BACKUP_KEEP="${EREGISTER_DB_BACKUP_KEEP:-14}"
+# gzip the dump. Off (0) only if something downstream wants plain .sql.
+DB_BACKUP_COMPRESS="${EREGISTER_DB_BACKUP_COMPRESS:-1}"
+# Take one dump immediately when the job is installed, rather than waiting for
+# the first nightly firing. Advisory: straight after an upgrade the database may
+# not be accepting connections yet, and that is reported, not treated as a
+# failure. 0 = let the timer take the first one.
+DB_BACKUP_FIRST_RUN="${EREGISTER_DB_BACKUP_FIRST_RUN:-1}"
+
 # --- Catch-up / reconcile (catch-up.sh) -------------------------------------
 # catch-up.sh re-checks everything install.sh is meant to have set up and redoes
 # only what is missing or out of date. Its checks are read-only; the one thing it
@@ -221,6 +247,7 @@ FORM_IMPORT_STATE=""  # <base>/v1/.bahmni_form_import_state.json (per-form sha25
 FORM_IMPORT_WORKDIR="" # <base>/v1/form-import  (importErrors.txt from unattended runs)
 UPGRADE_REPO_DIR=""   # <base>/v1/upgrade-to-v1  (this repo, kept current by catch-up.sh)
 CONCEPT_IMPORT_STATE="" # <base>/v1/.eregister_concept_import_state (sha256 of the imported dump)
+DB_BACKUP_DIR=""      # <base>/v1/db-backups  (the rolling nightly dumps, 0700)
 
 # Runtime state (for rollback) — touched as the upgrade progresses
 WORKDIR=""

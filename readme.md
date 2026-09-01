@@ -36,7 +36,7 @@ curl -fsSL https://raw.githubusercontent.com/Lesotho-eRegister-v1/upgrade-to-v1/
 Useful flags: `--no-recreate` (skip the EMR reload — then nothing touches a
 running container), `--force-repos` (bring off-release repos back, discarding
 local changes), `--no-stack` (leave `bahmni-docker-ls` alone), `--no-forms`,
-`--install-dir DIR`. It exits `0` only when there are no gaps, so it also works
+`--no-db-backup` (leave the nightly database backup alone), `--install-dir DIR`. It exits `0` only when there are no gaps, so it also works
 as a monitoring check. Full detail: [Catching an early site up](#catching-an-early-site-up).
 
 > [!WARNING]
@@ -114,13 +114,14 @@ lib/
 └── upgrade/
     ├── verify.sh                # verify_checksum, verify_gpg, git_clone_or_update
     ├── detect.sh                # read_current_version
-    ├── backup.sh                # ensure_dir, take_backup
+    ├── backup.sh                # ensure_dir, take_backup (the ONE pre-upgrade dump)
     ├── migrate.sh               # shutdown_old_stack, fetch_repos, run_restore
     ├── rollback.sh              # rollback
     ├── postinstall.sh           # post_verify, next_steps
     ├── concepts.sh              # import_concepts + the scheduled/delayed job
     ├── forms.sh                 # install_form_import (clinical-obs-forms -> EMR, daily)
     ├── autopull.sh              # install_auto_pull (systemd timer / cron.d)
+    ├── dbbackup.sh              # install_db_backup (nightly openmrsdb dump, daily)
     └── catchup.sh               # catch_up (reconcile a deployed site + report)
 bin/
 └── bahmni_form_import.sh        # the form importer itself (installed to /usr/local/bin)
@@ -230,13 +231,18 @@ Tune it with `EREGISTER_CONCEPT_IMPORT=0` (do not install the job),
 > `EREGISTER_CONCEPT_IMPORT_RESTART_EMR=1` if you want the job to restart the
 > EMR itself after an import.
 
-The three scheduled jobs are deliberately independent, and run in this order:
+The four scheduled jobs are deliberately independent, and run in this order:
 
 | Job | Schedule | Does |
 | --- | --- | --- |
+| `eregister-db-backup` | 01:30 | dumps the `openmrs` database |
 | `eregister-autopull` | 02:30 | fast-forwards the six asset/config repos |
 | `eregister-form-import` | 03:30 | deploys changed clinical forms |
 | `eregister-concept-import` | 04:30 | imports a changed concept dictionary |
+
+The backup goes first on purpose: the three jobs after it all write to the site
+in some way, so each night's dump is of the database as it stood *before* any of
+them ran.
 
 OpenMRS caches concepts, so restart the EMR service afterwards for the new
 dictionary to show up:
@@ -316,6 +322,79 @@ A form whose concepts are not in the dictionary is **not** deployed: the run
 writes `<form>.importErrors.txt` into `/var/lib/v1/form-import/` listing the
 missing concept names, and exits non-zero. Load the concept dictionary first
 (see above) and the next run picks the form up.
+
+# Daily backups of the v1 database
+
+The installer schedules a nightly dump of the live `openmrs` database out of the
+`openmrsdb` service. This is **not** the pre-upgrade backup in
+`/var/lib/v1/bahmni-backup/openmrsdb_backup.sql` — that one is taken once, from
+the 0.92 stack, and is what the restore reads. This is the rolling backup of the
+site from the upgrade onwards.
+
+| Path | What it is |
+| --- | --- |
+| `/usr/local/bin/eregister-db-backup.sh` | the backup script (run it by hand any time) |
+| `eregister-db-backup.timer` or `/etc/cron.d/eregister-db-backup` | the **daily** schedule (01:30) |
+| `/var/lib/v1/db-backups/openmrs_<stamp>.sql.gz` | the dumps, mode 0600 in a 0700 folder |
+| `/var/lib/v1/db-backups/latest.sql.gz` | symlink to the newest one |
+| `/var/log/eregister-db-backup.log` | every run |
+
+One run:
+
+1. `mysqldump --single-transaction` inside the `openmrsdb` container — a
+   consistent snapshot that does not lock writers, so the site keeps working;
+2. streams it out and gzips it host-side under a `.part` name;
+3. checks the gzip integrity **and** that `mysqldump` wrote its `Dump completed`
+   trailer;
+4. only then moves it into place and repoints `latest.sql.gz`;
+5. deletes all but the newest 14 dumps.
+
+Step 3 is the point of the whole thing. A dump cut short by an OOM, a full disk
+or a container restarting looks exactly like a good one until the day you try to
+restore it. A truncated dump is never kept as a backup: it stays as a `.part`
+file, the run is logged as a failure, and `catch-up.sh` reports it.
+
+The password is never on the host's command line — it is passed to a shell
+inside the container, and an unset one falls back to the container's own
+`MYSQL_ROOT_PASSWORD`, which is what a stock v1 stack uses. Set
+`EREGISTER_DB_PASS` only if yours differs; the script is then installed 0700
+rather than 0755, because the password is baked into it.
+
+```bash
+sudo /usr/local/bin/eregister-db-backup.sh          # take one now
+tail -f /var/log/eregister-db-backup.log            # watch it
+systemctl list-timers eregister-db-backup.timer     # when it next fires
+```
+
+Restore one:
+
+```bash
+cd /var/lib/v1/bahmni-docker-ls/bahmni-standard
+gzip -dc /var/lib/v1/db-backups/latest.sql.gz \
+  | sudo docker compose exec -T openmrsdb mysql -uroot -p
+```
+
+The dump carries `CREATE DATABASE` / `USE`, so it recreates the database on its
+own. Restart `openmrs` afterwards — it caches heavily.
+
+Tune it with `--no-db-backup` (or `EREGISTER_DB_BACKUP=0`) to skip it entirely,
+`EREGISTER_DB_BACKUP_CRON` (default `30 1 * * *`),
+`EREGISTER_DB_BACKUP_ONCALENDAR` (default `*-*-* 01:30:00`),
+`EREGISTER_DB_BACKUP_KEEP` (default `14`),
+`EREGISTER_DB_BACKUP_DIR` (default `/var/lib/v1/db-backups`),
+`EREGISTER_DB_BACKUP_COMPRESS=0` for plain `.sql`, and
+`EREGISTER_DB_BACKUP_FIRST_RUN=0` to leave the first dump to the timer.
+
+> [!WARNING]
+> **These dumps are on the same disk as the database.** They undo a bad import
+> or a deleted record; they do nothing for a dead disk or a lost server. Copy
+> `/var/lib/v1/db-backups` off the host as well — `rsync`, a mounted volume, an
+> object store, whatever the site already has.
+
+> [!NOTE]
+> Straight after an upgrade the immediate first dump often fails, because
+> `openmrsdb` is not accepting connections yet. That is reported, not treated as
+> an install failure — the nightly job takes the first dump instead.
 
 # Keeping the v1 repos up to date
 
@@ -414,13 +493,15 @@ What it does, in order:
    1, so the site's `/var/lib/v1/upgrade-to-v1` checkout is kept current even
    when you ran the script from a clone somewhere else.
 3. **Reinstalls the generated helpers** — `eregister-autopull.sh`,
-   `bahmni-form-import.sh`, `eregister-form-import.sh` — from the release that
-   was just pulled. An existing `/etc/eregister/form-import.env` is never
-   overwritten; a missing one is written after prompting for the password.
-4. **Checks all three scheduled jobs** (`eregister-autopull`,
-   `eregister-form-import`, `eregister-concept-import`) and installs whichever
-   is absent, as a systemd timer or an `/etc/cron.d` entry. Hosts with neither
-   get the exact cron line to add by hand.
+   `eregister-db-backup.sh`, `bahmni-form-import.sh`, `eregister-form-import.sh`
+   — from the release that was just pulled. An existing
+   `/etc/eregister/form-import.env` is never overwritten; a missing one is
+   written after prompting for the password.
+4. **Checks all four scheduled jobs** (`eregister-db-backup`,
+   `eregister-autopull`, `eregister-form-import`, `eregister-concept-import`)
+   and installs whichever is absent, as a systemd timer or an `/etc/cron.d`
+   entry. Hosts with neither get the exact cron line to add by hand. This is how
+   a site installed before the backup job existed gets one.
 5. **Runs the clinical form import** — only forms whose content changed are
    deployed, so on a current site this is a no-op.
 6. **Reports on the concept dictionary** — which dump is on disk, whether it is
@@ -431,10 +512,15 @@ What it does, in order:
    `imported` row follows from that — a newer dump **with** the job scheduled is
    `OK` (pending tonight); the same dump with **no** job scheduled is a `GAP`,
    because then nothing will ever load it.
-7. **Reports service health** — `docker compose ps` per service plus HTTP
+7. **Reports on the database backups** — how many dumps there are and how old
+   the newest one is. The schedule row above only says a timer exists; this row
+   says it is producing files, which is the question that matters. A newest dump
+   over 36h old is a `GAP`, as is any leftover `.part` file. Silence with
+   `--no-db-backup`.
+8. **Reports service health** — `docker compose ps` per service plus HTTP
    probes of the OpenMRS REST API and the Bahmni UI. This is the site **as
    found**, probed before the reload below.
-8. **Reloads the EMR**, last, so everything refreshed above is actually picked
+9. **Reloads the EMR**, last, so everything refreshed above is actually picked
    up:
 
    ```bash
@@ -463,6 +549,7 @@ Then it prints one table:
   ✔ OK    forms     import                           imported 0/12 form(s), 12 unchanged, 0 failed
   ✔ OK    concepts  imported                         newer dump pending — daily job loads it (30 4 * * *); in the DB now: omrs_concept_dictionary_20260804.sql from 2026-06-14T09:12:03Z
   ✔ OK    concepts  database                         openmrs.concept holds 412345 rows
+  ✔ OK    backup    dumps                            14 kept (limit 14); newest openmrs_20260901_013012.sql.gz 284M, 9h old
   ✘ GAP   service   reports                          exited — Exited (1) 2 hours ago
   ✔ OK    endpoint  openmrs REST                     https://localhost/openmrs — HTTP 200
   ⟳ FIXED reload    openmrs                          recreated with renewed anonymous volumes — booting now
@@ -478,12 +565,15 @@ no `GAP` rows, so it can be wired into monitoring:
 
 Flags: `--yes`, `--no-recreate`, `--force-repos`, `--no-stack`, `--no-forms`,
 `--no-concepts` (leave the dictionary alone entirely — no DB probe, and the
-daily concept job is neither installed nor refreshed), `--install-dir DIR`,
+daily concept job is neither installed nor refreshed), `--no-db-backup` (leave
+the nightly database backup alone — neither installed, refreshed, nor reported
+on), `--install-dir DIR`,
 `--no-color`. Env: `EREGISTER_BAHMNI_PASS` (needed
 for `--yes` if the credentials file is missing), `EREGISTER_UPGRADE_REPO`,
 `EREGISTER_UPGRADE_REF`, `EREGISTER_CATCHUP_STACK_REPO=0`,
 `EREGISTER_CATCHUP_DB_CHECK=0`, `EREGISTER_CATCHUP_HTTP_TIMEOUT`,
 `EREGISTER_CATCHUP_RECREATE=0`, `EREGISTER_CATCHUP_FORCE_REPOS=1`,
+`EREGISTER_DB_BACKUP=0`, `EREGISTER_DB_BACKUP_CRON`, `EREGISTER_DB_BACKUP_KEEP`,
 `EREGISTER_EMR_SERVICE`, `EREGISTER_CONCEPT_IMPORT=0`.
 
 > [!WARNING]

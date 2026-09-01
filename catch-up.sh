@@ -26,12 +26,15 @@
 #      dhisconnector_mappings_v1, openmrs-v1-modules — and the site's own
 #      upgrade-to-v1 checkout
 #   3. reinstalls the generated helper scripts from the current release
-#   4. checks all THREE scheduled jobs (repo auto-pull, daily clinical form
-#      import, daily concept-dictionary import) and installs whichever is missing
+#   4. checks all FOUR scheduled jobs (repo auto-pull, daily clinical form
+#      import, daily concept-dictionary import, daily database backup) and
+#      installs whichever is missing
 #   5. runs the form import (only forms whose content changed are deployed)
 #   6. reports on the concept dictionary: which dump is on disk, and whether it
 #      is the one actually imported. Catch-up never imports it itself — that is
 #      the daily concept job's business (or ./import-concepts.sh by hand)
+#   6b. reports on the nightly database dumps: how many there are and how old
+#      the newest one is, so a job that has been quietly failing is visible
 #   7. reports the health of the running services and endpoints (as found)
 #   8. recreates the EMR service, last, so the refreshed config/omods/forms are
 #      loaded — skip with --no-recreate
@@ -43,8 +46,8 @@
 # USAGE
 #   curl -fsSL <raw>/catch-up.sh | bash
 #   ./catch-up.sh [--yes] [--no-stack] [--no-forms] [--no-concepts]
-#                 [--no-recreate] [--force-repos] [--install-dir DIR]
-#                 [--no-color] [--help]
+#                 [--no-db-backup] [--no-recreate] [--force-repos]
+#                 [--install-dir DIR] [--no-color] [--help]
 #
 #   -y, --yes        Non-interactive; assume "yes" at every prompt.
 #   --no-stack       Do not fast-forward bahmni-docker-ls (the compose files the
@@ -53,6 +56,8 @@
 #   --no-concepts    Leave the concept dictionary alone: skip the concept-count
 #                    query, and neither install nor refresh the daily
 #                    concept-import job.
+#   --no-db-backup   Leave the daily database backup alone: neither install nor
+#                    refresh it, and do not report on the dumps it has taken.
 #   --no-recreate    Do NOT recreate the EMR service at the end. Nothing then
 #                    touches a running container, but the refreshed config,
 #                    omods and forms are not loaded until it is restarted.
@@ -77,6 +82,9 @@
 #   EREGISTER_CATCHUP_RECREATE=0      same as --no-recreate
 #   EREGISTER_CONCEPT_IMPORT=0        do not install/refresh the concept job
 #   EREGISTER_CONCEPT_IMPORT_CRON     its schedule (default '30 4 * * *')
+#   EREGISTER_DB_BACKUP=0             do not install/refresh the daily DB backup
+#   EREGISTER_DB_BACKUP_CRON          its schedule (default '30 1 * * *')
+#   EREGISTER_DB_BACKUP_KEEP          dumps to retain (default 14)
 #   EREGISTER_CATCHUP_FORCE_REPOS=1   same as --force-repos
 #   EREGISTER_EMR_SERVICE             compose service to recreate (default openmrs)
 #   EREGISTER_CATCHUP_HTTP_TIMEOUT    seconds per health probe (default 15)
@@ -94,7 +102,8 @@ EREGISTER_UPGRADE_REF="${EREGISTER_UPGRADE_REF:-main}"
 BOOTSTRAP_DIR=""   # temp dir holding downloaded modules; cleaned up on EXIT
 
 # Everything the reconcile touches: the repo updater (verify), the DB probe
-# (concepts), the scheduled jobs (autopull, forms) and the checks themselves.
+# (concepts), the scheduled jobs (autopull, dbbackup, forms) and the checks
+# themselves.
 EREGISTER_MODULES=(
   core/config.sh
   core/logging.sh
@@ -105,6 +114,7 @@ EREGISTER_MODULES=(
   upgrade/verify.sh
   upgrade/concepts.sh
   upgrade/autopull.sh
+  upgrade/dbbackup.sh
   upgrade/forms.sh
   upgrade/catchup.sh
 )
@@ -443,6 +453,7 @@ parse_catchup_args() {
       -y|--yes)       ASSUME_YES="1" ;;
       --no-stack)     CATCHUP_STACK_REPO="0" ;;
       --no-forms)     IMPORT_FORMS="0" ;;
+      --no-db-backup) DB_BACKUP="0" ;;
       --no-recreate)  CATCHUP_RECREATE_EMR="0" ;;
       --force-repos)  CATCHUP_FORCE_REPOS="1" ;;
       # Same meaning as in install.sh: leave the concept dictionary alone —

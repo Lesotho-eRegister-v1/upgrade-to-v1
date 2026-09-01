@@ -223,6 +223,20 @@ _next_steps_autopull_line() {
   fi
 }
 
+_next_steps_dbbackup_line() {
+  # Same rule as the others: describe only what is actually on this host. The
+  # script is what both the timer and a human invoke, so its absence means the
+  # site has no routine backup at all — which is worth saying outright.
+  if [ -f "$DB_BACKUP_RUNNER" ]; then
+    printf 'is dumped nightly at %s by\n    %s\n    (%ssystemd: %s.timer, or /etc/cron.d/%s%s), keeping the newest %s.' \
+           "$DB_BACKUP_CRON" "$DB_BACKUP_RUNNER" \
+           "$C_DIM" "$DB_BACKUP_UNIT" "$DB_BACKUP_UNIT" "$C_RESET" "$DB_BACKUP_KEEP"
+  else
+    printf 'is NOT being backed up on any schedule: %s is not\n    installed on this host. Install it with ./catch-up.sh, or by re-running\n    the installer with --force.' \
+           "$DB_BACKUP_RUNNER"
+  fi
+}
+
 next_steps() {
   local backup_size dc
   # '|| true' so a missing/unreadable backup never aborts next_steps under set -e.
@@ -279,6 +293,21 @@ $(_next_steps_rule)
     Re-install / re-schedule:
          curl -fsSL ${RAW_BASE}/import-forms.sh | bash
        (or, from the upgrade repo:  ./import-forms.sh)
+
+  Database backups:
+    The '${DB_NAME}' database in the ${DB_SERVICE} service
+    $(_next_steps_dbbackup_line)
+    Dumps:       ${DB_BACKUP_DIR}/${DB_NAME}_<stamp>.sql.gz  (newest: latest.sql.gz)
+    Take one:    sudo ${DB_BACKUP_RUNNER}
+    Log:         ${DB_BACKUP_LOG}
+    Restore one: gzip -dc ${DB_BACKUP_DIR}/latest.sql.gz \\
+                   | (cd ${RESTORE_DIR} && ${dc} exec -T ${DB_SERVICE} mysql -u${DB_USER} -p)
+    A dump that mysqldump did not finish writing is never kept — it is left as
+    a .part file and the run is logged as a failure, so a truncated backup can
+    never quietly take the place of a good one.
+${C_WARN}    ⚠ These dumps are on the SAME disk as the database. They undo a bad
+    import or a deleted record; they do NOT survive losing this machine.
+    Copy ${DB_BACKUP_DIR} to somewhere else as well.${C_RESET}
 
   Auto-updates:
     The asset/config repos
