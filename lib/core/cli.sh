@@ -48,6 +48,11 @@ resolve_config() {
   # has to look at the filesystem.
   CONCEPTS_SQL="${CONCEPTS_SQL_NAME:+${CONCEPTS_DIR}/${CONCEPTS_SQL_NAME}}"
   CONCEPT_IMPORT_STATE="${V1_DIR}/.eregister_concept_import_state"
+  REPORTING_DIR="${V1_DIR}/openmrs_reporting_release"
+  # Same story as CONCEPTS_SQL: only a pinned name can be resolved this early.
+  # The usual case (every *.sql in the clone) is resolved at use time by
+  # _reporting_sql_files, which has to look at the filesystem.
+  REPORTING_IMPORT_STATE="${V1_DIR}/.eregister_reporting_import_state"
   FORMS_DIR="${EREGISTER_FORMS_DIR:-${V1_DIR}/clinical-obs-forms}"
   # State and scratch deliberately sit in V1_DIR, NOT inside the clone: the
   # auto-pull job hard-resets clinical-obs-forms, and the record of what has
@@ -93,6 +98,7 @@ print_config() {
   ${C_DIM}eRegister_HOME${C_RESET} : ${eRegister_HOME}
   ${C_DIM}Concept dict${C_RESET}   : $( [ "$CONCEPT_IMPORT" = "1" ] && echo "${CONCEPTS_SQL:-${CONCEPTS_DIR}/${CONCEPTS_SQL_PATTERN} (newest)} -> ${DB_SERVICE}:${DB_NAME}" || echo "disabled (--no-concepts)" )
   ${C_DIM}Concept job${C_RESET}    : $( concept_job_label )
+  ${C_DIM}Report defs${C_RESET}    : ${REPORTING_DIR} (cloned here; imported by ./catch-up.sh)
   ${C_DIM}Form import${C_RESET}    : $( [ "$IMPORT_FORMS" = "1" ] && echo "${FORMS_DIR} -> ${BAHMNI_URL} as '${BAHMNI_USER}' (daily: ${FORM_IMPORT_CRON})" || echo "disabled (--no-forms)" )
   ${C_DIM}DB backup${C_RESET}      : $( [ "$DB_BACKUP" = "1" ] && echo "${DB_SERVICE}:${DB_NAME} -> ${DB_BACKUP_DIR} (daily: ${DB_BACKUP_CRON}, keep ${DB_BACKUP_KEEP})" || echo "disabled (--no-db-backup)" )
   ${C_DIM}Old stack${C_RESET}      : ${OLD_DOCKER_DIR}

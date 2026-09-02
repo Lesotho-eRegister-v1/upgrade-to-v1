@@ -59,6 +59,23 @@ IMPORT_CONCEPTS="${EREGISTER_IMPORT_CONCEPTS:-1}"     # 0 (or --no-concepts) dis
 # to pin one exact filename.
 CONCEPTS_SQL_NAME="${EREGISTER_CONCEPTS_SQL_NAME:-}"
 CONCEPTS_SQL_PATTERN="${EREGISTER_CONCEPTS_SQL_PATTERN:-omrs_concept_dictionary*.sql}"
+# --- OpenMRS report definition import ---------------------------------------
+# The openmrs_reporting_release clone ships a mysqldump of the OpenMRS
+# reporting module's serialized_object table — the report/cohort/indicator
+# definitions the Reports app lists. It is loaded into the same 'openmrs'
+# database of the openmrsdb service. See lib/upgrade/reporting.sh.
+# Cloned by install.sh; imported by catch-up.sh (install.sh only clones it —
+# the stack has just booted there and the DB is not usable yet).
+IMPORT_REPORTING="${EREGISTER_IMPORT_REPORTING:-1}"   # 0 (or --no-reporting) disables it
+# Which .sql file(s) in that clone to feed in. The repo currently holds exactly
+# one, Serialized_Object.sql, but nothing about the import depends on that:
+# leave REPORTING_SQL_NAME EMPTY to import every file matching
+# REPORTING_SQL_PATTERN at the top of the clone, in filename order, so a second
+# dump added upstream is picked up without a code change. Set it to pin one
+# exact filename.
+REPORTING_SQL_NAME="${EREGISTER_REPORTING_SQL_NAME:-}"
+REPORTING_SQL_PATTERN="${EREGISTER_REPORTING_SQL_PATTERN:-*.sql}"
+
 # Raw base for self-bootstrapping the standalone helpers (kept in sync with the
 # same default in install.sh / ocl-fix.sh / import-concepts.sh).
 RAW_BASE="${EREGISTER_RAW_BASE:-https://raw.githubusercontent.com/Lesotho-eRegister-v1/upgrade-to-v1/refs/heads/main}"
@@ -182,7 +199,8 @@ CATCHUP_FORCE_REPOS="${EREGISTER_CATCHUP_FORCE_REPOS:-0}"
 # --- Auto-update (periodic git pull of the v1 asset/config repos) ------------
 # After a successful upgrade, a scheduled job keeps the asset/config repos
 # (standard-config-ls, implementer-interface-release, openmrs-v1-modules,
-# clinical-obs-forms, dhisconnector_mappings_v1, eregister_concepts_release_v1)
+# clinical-obs-forms, dhisconnector_mappings_v1, eregister_concepts_release_v1,
+# openmrs_reporting_release)
 # in sync with their remotes.
 # Implemented as a systemd timer
 # where systemd is available, else an /etc/cron.d entry. See lib/upgrade/autopull.sh.
@@ -217,6 +235,10 @@ REPO_DHIS_MAPPINGS="https://github.com/Lesotho-eRegister-v1/dhisconnector_mappin
 # Concept dictionary release — also evolves after deployment, so it is cloned
 # with the other assets and kept in sync by the auto-pull job.
 REPO_CONCEPTS="https://github.com/Lesotho-eRegister-v1/eregister_concepts_release_v1"
+# OpenMRS report definitions (serialized_object dump) — a release repo like the
+# concepts one: new reports arrive in it after deployment, so it is cloned with
+# the other assets and kept in sync by the auto-pull job.
+REPO_REPORTING="https://github.com/Lesotho-eRegister-v1/openmrs_reporting_release"
 
 # Per-repo git refs (branch/tag/sha). The Lesotho repos have no 'main' branch;
 # their v1 line lives on 'Bokang-changes'. config092 uses 'main'.
@@ -232,6 +254,8 @@ REF_OBS_FORMS="${EREGISTER_REF_OBS_FORMS:-main}"
 REF_DHIS_MAPPINGS="${EREGISTER_REF_DHIS_MAPPINGS:-master}"
 # eregister_concepts_release_v1 publishes 'main'.
 REF_CONCEPTS="${EREGISTER_REF_CONCEPTS:-main}"
+# openmrs_reporting_release is a fork with no 'main'; its default branch is 'master'.
+REF_REPORTING="${EREGISTER_REF_REPORTING:-master}"
 
 # Derived paths (finalized in resolve_config once INSTALL_BASE is known)
 V1_DIR=""             # <base>/v1
@@ -242,11 +266,13 @@ DONE_MARKER=""        # <base>/v1/.eregister-upgrade-complete
 RESTORE_DIR=""        # <base>/v1/bahmni-docker-ls/bahmni-standard
 CONCEPTS_DIR=""       # <base>/v1/eregister_concepts_release_v1
 CONCEPTS_SQL=""       # <base>/v1/eregister_concepts_release_v1/<CONCEPTS_SQL_NAME>
+REPORTING_DIR=""      # <base>/v1/openmrs_reporting_release
 FORMS_DIR=""          # <base>/v1/clinical-obs-forms  (the JSON form exports)
 FORM_IMPORT_STATE=""  # <base>/v1/.bahmni_form_import_state.json (per-form sha256+version)
 FORM_IMPORT_WORKDIR="" # <base>/v1/form-import  (importErrors.txt from unattended runs)
 UPGRADE_REPO_DIR=""   # <base>/v1/upgrade-to-v1  (this repo, kept current by catch-up.sh)
 CONCEPT_IMPORT_STATE="" # <base>/v1/.eregister_concept_import_state (sha256 of the imported dump)
+REPORTING_IMPORT_STATE="" # <base>/v1/.eregister_reporting_import_state (sha256 of the imported dump set)
 DB_BACKUP_DIR=""      # <base>/v1/db-backups  (the rolling nightly dumps, 0700)
 
 # Runtime state (for rollback) — touched as the upgrade progresses

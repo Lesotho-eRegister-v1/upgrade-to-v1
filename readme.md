@@ -119,6 +119,7 @@ lib/
     ├── rollback.sh              # rollback
     ├── postinstall.sh           # post_verify, next_steps
     ├── concepts.sh              # import_concepts + the scheduled/delayed job
+    ├── reporting.sh             # import_reporting (openmrs_reporting_release -> openmrsdb)
     ├── forms.sh                 # install_form_import (clinical-obs-forms -> EMR, daily)
     ├── autopull.sh              # install_auto_pull (systemd timer / cron.d)
     ├── dbbackup.sh              # install_db_backup (nightly openmrsdb dump, daily)
@@ -231,12 +232,60 @@ Tune it with `EREGISTER_CONCEPT_IMPORT=0` (do not install the job),
 > `EREGISTER_CONCEPT_IMPORT_RESTART_EMR=1` if you want the job to restart the
 > EMR itself after an import.
 
+# Importing the OpenMRS report definitions
+
+The `openmrs_reporting_release` clone
+(`/var/lib/v1/openmrs_reporting_release/Serialized_Object.sql`) is a mysqldump
+of the OpenMRS reporting module's `serialized_object` table. That table **is**
+the report library: every report, cohort, indicator and dataset definition the
+Reports app lists is one serialized XML row in it.
+
+**The installer clones it but does not import it**, for the same reason it does
+not import the concept dictionary — when an upgrade finishes the database behind
+the stack is minutes old. **`catch-up.sh` does the import**, and it is the one
+import catch-up performs itself rather than reporting on:
+
+- it replaces **one table**, `serialized_object`. No patient data, no concepts,
+  no obs;
+- the current contents of exactly the tables the dump touches are written to
+  `/var/lib/v1/bahmni-backup/reporting-preimport-<timestamp>.sql` first, so
+  feeding that file back undoes the import;
+- it is content-addressed. The sha256 of what was imported is recorded in
+  `/var/lib/v1/.eregister_reporting_import_state`, so a clone whose dump is
+  already the one in the database costs a hash and stops there — catch-up can be
+  run nightly without ever re-importing the same definitions;
+- nothing else schedules it. The concept dictionary has a daily job to defer to;
+  the report definitions do not, so reporting a gap and leaving it would leave
+  that gap open forever.
+
+The auto-pull job keeps the clone current, so a new release of the definitions
+lands on disk on its own and the next catch-up run imports it.
+
+```bash
+sudo ./catch-up.sh                       # imports if the dump is new
+sudo rm /var/lib/v1/.eregister_reporting_import_state && sudo ./catch-up.sh   # force a re-import
+```
+
+By default every `*.sql` at the top of the clone is imported, in filename order
+— today that is the repo's single `Serialized_Object.sql`, and a second dump
+added upstream is picked up with no code change. Pin one file with
+`EREGISTER_REPORTING_SQL_NAME`, change the pattern with
+`EREGISTER_REPORTING_SQL_PATTERN`, track a different branch with
+`EREGISTER_REF_REPORTING` (default `master`), or skip the import entirely with
+`--no-reporting` / `EREGISTER_IMPORT_REPORTING=0`.
+
+> [!WARNING]
+> Like the concept dictionary, this **replaces** rather than merges: report
+> definitions written on this site by hand, and not present in the release, are
+> gone after an import. And OpenMRS caches them — new reports appear only after
+> `openmrs` restarts, which catch-up's final step does anyway.
+
 The four scheduled jobs are deliberately independent, and run in this order:
 
 | Job | Schedule | Does |
 | --- | --- | --- |
 | `eregister-db-backup` | 01:30 | dumps the `openmrs` database |
-| `eregister-autopull` | 02:30 | fast-forwards the six asset/config repos |
+| `eregister-autopull` | 02:30 | fast-forwards the seven asset/config repos |
 | `eregister-form-import` | 03:30 | deploys changed clinical forms |
 | `eregister-concept-import` | 04:30 | imports a changed concept dictionary |
 
@@ -401,7 +450,8 @@ Tune it with `--no-db-backup` (or `EREGISTER_DB_BACKUP=0`) to skip it entirely,
 After a successful upgrade the installer offers to schedule a job that
 periodically `git pull`s the asset/config repos — `standard-config-ls`,
 `implementer-interface-release`, `openmrs-v1-modules`, `clinical-obs-forms`,
-and `dhisconnector_mappings_v1` — so a deployed instance tracks their remotes
+`dhisconnector_mappings_v1`, `eregister_concepts_release_v1` and
+`openmrs_reporting_release` — so a deployed instance tracks their remotes
 without a full re-run.
 
 - On systemd hosts (Ubuntu default) it installs `eregister-autopull.timer` +
@@ -457,8 +507,10 @@ curl -fsSL https://raw.githubusercontent.com/Lesotho-eRegister-v1/upgrade-to-v1/
 ```
 (or, from the upgrade repo: `bash ./catch-up.sh`)
 
-Everything it checks is read-only, and the one step that acts on a running
-container — the EMR reload — comes last and is confirmed first.
+Everything it checks is read-only. Two steps write: the report definition
+import (one table, backed up first, skipped when already current) and the EMR
+reload, which is the only step that acts on a running container and comes last.
+Both are confirmed before they run.
 
 What it does, in order:
 
@@ -472,6 +524,7 @@ What it does, in order:
    | --- | --- | --- |
    | `clinical-obs-forms` | `main` | the forms the daily import deploys |
    | `eregister_concepts_release_v1` | `main` | the concept dictionary dump |
+   | `openmrs_reporting_release` | `master` | the report definitions dump |
    | `implementer-interface-release` | `main` | |
    | `standard-config-ls` | `Bokang-changes` | |
    | `bahmni-docker-ls` | `Bokang-changes` | the stack; disk only — see below |
@@ -512,30 +565,37 @@ What it does, in order:
    `imported` row follows from that — a newer dump **with** the job scheduled is
    `OK` (pending tonight); the same dump with **no** job scheduled is a `GAP`,
    because then nothing will ever load it.
-7. **Reports on the database backups** — how many dumps there are and how old
+7. **Imports the OpenMRS report definitions** from `openmrs_reporting_release`
+   into the `openmrs` database — see
+   [Importing the OpenMRS report definitions](#importing-the-openmrs-report-definitions).
+   Unlike the dictionary above this one *is* imported here: it replaces a single
+   table (`serialized_object`), backs that table up first, and does nothing at
+   all when the dump in the clone is already the one in the database. Skip with
+   `--no-reporting`.
+8. **Reports on the database backups** — how many dumps there are and how old
    the newest one is. The schedule row above only says a timer exists; this row
    says it is producing files, which is the question that matters. A newest dump
    over 36h old is a `GAP`, as is any leftover `.part` file. Silence with
    `--no-db-backup`.
-8. **Reports service health** — `docker compose ps` per service plus HTTP
+9. **Reports service health** — `docker compose ps` per service plus HTTP
    probes of the OpenMRS REST API and the Bahmni UI. This is the site **as
    found**, probed before the reload below.
-9. **Reloads the EMR**, last, so everything refreshed above is actually picked
-   up:
+10. **Reloads the EMR**, last, so everything refreshed above is actually picked
+    up:
 
-   ```bash
-   docker compose up -d --force-recreate --renew-anon-volumes openmrs
-   ```
+    ```bash
+    docker compose up -d --force-recreate --renew-anon-volumes openmrs
+    ```
 
-   A long-running `openmrs` container keeps serving the config it read at boot,
-   and content seeded into its **anonymous** volumes survives a plain restart —
-   so `--force-recreate` replaces the container and `--renew-anon-volumes`
-   throws those volumes away to be re-seeded. The EMR is then down for its usual
-   30+ minute boot. Named volumes and the `openmrsdb` service (patient data) are
-   untouched, but anything hand-placed *inside* the running EMR container rather
-   than in its config repo is gone. Skip with `--no-recreate` /
-   `EREGISTER_CATCHUP_RECREATE=0`; change the service with
-   `EREGISTER_EMR_SERVICE`.
+    A long-running `openmrs` container keeps serving the config it read at boot,
+    and content seeded into its **anonymous** volumes survives a plain restart —
+    so `--force-recreate` replaces the container and `--renew-anon-volumes`
+    throws those volumes away to be re-seeded. The EMR is then down for its usual
+    30+ minute boot. Named volumes and the `openmrsdb` service (patient data) are
+    untouched, but anything hand-placed *inside* the running EMR container rather
+    than in its config repo is gone. Skip with `--no-recreate` /
+    `EREGISTER_CATCHUP_RECREATE=0`; change the service with
+    `EREGISTER_EMR_SERVICE`.
 
 Then it prints one table:
 
@@ -549,6 +609,7 @@ Then it prints one table:
   ✔ OK    forms     import                           imported 0/12 form(s), 12 unchanged, 0 failed
   ✔ OK    concepts  imported                         newer dump pending — daily job loads it (30 4 * * *); in the DB now: omrs_concept_dictionary_20260804.sql from 2026-06-14T09:12:03Z
   ✔ OK    concepts  database                         openmrs.concept holds 412345 rows
+  ⟳ FIXED reporting definitions                      Serialized_Object.sql imported — serialized_object holds 3402 rows
   ✔ OK    backup    dumps                            14 kept (limit 14); newest openmrs_20260901_013012.sql.gz 284M, 9h old
   ✘ GAP   service   reports                          exited — Exited (1) 2 hours ago
   ✔ OK    endpoint  openmrs REST                     https://localhost/openmrs — HTTP 200
@@ -565,7 +626,9 @@ no `GAP` rows, so it can be wired into monitoring:
 
 Flags: `--yes`, `--no-recreate`, `--force-repos`, `--no-stack`, `--no-forms`,
 `--no-concepts` (leave the dictionary alone entirely — no DB probe, and the
-daily concept job is neither installed nor refreshed), `--no-db-backup` (leave
+daily concept job is neither installed nor refreshed), `--no-reporting` (clone
+and fast-forward `openmrs_reporting_release`, but do not import it),
+`--no-db-backup` (leave
 the nightly database backup alone — neither installed, refreshed, nor reported
 on), `--install-dir DIR`,
 `--no-color`. Env: `EREGISTER_BAHMNI_PASS` (needed
@@ -574,7 +637,9 @@ for `--yes` if the credentials file is missing), `EREGISTER_UPGRADE_REPO`,
 `EREGISTER_CATCHUP_DB_CHECK=0`, `EREGISTER_CATCHUP_HTTP_TIMEOUT`,
 `EREGISTER_CATCHUP_RECREATE=0`, `EREGISTER_CATCHUP_FORCE_REPOS=1`,
 `EREGISTER_DB_BACKUP=0`, `EREGISTER_DB_BACKUP_CRON`, `EREGISTER_DB_BACKUP_KEEP`,
-`EREGISTER_EMR_SERVICE`, `EREGISTER_CONCEPT_IMPORT=0`.
+`EREGISTER_EMR_SERVICE`, `EREGISTER_CONCEPT_IMPORT=0`,
+`EREGISTER_IMPORT_REPORTING=0`, `EREGISTER_REPORTING_SQL_NAME`,
+`EREGISTER_REF_REPORTING`.
 
 > [!WARNING]
 > The monitoring/cron use above should carry `--no-recreate`. Left on, every

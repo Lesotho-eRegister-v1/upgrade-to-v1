@@ -281,6 +281,14 @@ $(_next_steps_rule)
     NOTE: OpenMRS caches concepts — the EMR must restart before a newly
     imported dictionary is visible. The job logs this; it does not restart it.
 
+  Report definitions:
+    ${REPORTING_DIR}
+    Cloned, not imported: the database is minutes old at this point. The
+    catch-up script loads them into '${DB_NAME}' (one table, serialized_object,
+    dumped to ${BACKUP_DIR} first) and skips the work when they are already in:
+         curl -fsSL ${RAW_BASE}/catch-up.sh | bash
+       (or, from the upgrade repo:  ./catch-up.sh)
+
   Clinical observation forms:
     ${FORMS_DIR}
     $(_next_steps_forms_line)
@@ -313,7 +321,8 @@ ${C_WARN}    ⚠ These dumps are on the SAME disk as the database. They undo a b
     The asset/config repos
     (standard-config-ls, implementer-interface-release, openmrs-v1-modules,
     clinical-obs-forms, dhisconnector_mappings_v1,
-    eregister_concepts_release_v1) $(_next_steps_autopull_line)
+    eregister_concepts_release_v1, openmrs_reporting_release)
+    $(_next_steps_autopull_line)
 
   Re-running this script is safe (idempotent). Use --force to redo a
   completed upgrade. To pick up later changes to these scripts without a full

@@ -30,6 +30,9 @@ fetch_repos() {
   git_clone_or_update "$REPO_OBS_FORMS"       "${V1_DIR}/clinical-obs-forms"  "$REF_OBS_FORMS"
   git_clone_or_update "$REPO_DHIS_MAPPINGS"   "${V1_DIR}/dhisconnector_mappings_v1" "$REF_DHIS_MAPPINGS"
   git_clone_or_update "$REPO_CONCEPTS"        "${V1_DIR}/eregister_concepts_release_v1" "$REF_CONCEPTS"
+  # Report definitions (the serialized_object dump). Cloned only — catch-up.sh
+  # imports it, because the database it would go into is minutes old here.
+  git_clone_or_update "$REPO_REPORTING"       "${V1_DIR}/openmrs_reporting_release" "$REF_REPORTING"
   # 0.92 config goes alongside the backup and is renamed to bahmni_config.
   git_clone_or_update "$REPO_CONFIG_092"      "${BACKUP_DIR}/bahmni_config"   "$REF_CONFIG_092"
 }

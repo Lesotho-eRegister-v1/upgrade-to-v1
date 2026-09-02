@@ -86,6 +86,18 @@
 #   (0600). Re-run it on its own at any time with ./import-forms.sh, or
 #   sudo /usr/local/bin/eregister-form-import.sh.
 #
+#   The OpenMRS REPORT DEFINITIONS are cloned but not imported here, for the
+#   same reason as the concept dictionary: openmrs_reporting_release ships a
+#   mysqldump of the reporting module's serialized_object table — the report,
+#   cohort and indicator definitions the Reports app lists — and the database it
+#   would go into is minutes old when this script finishes. The clone lands at
+#   <base>/v1/openmrs_reporting_release and the auto-pull job keeps it current;
+#   ./catch-up.sh does the import, backing the table up first and skipping the
+#   work entirely when the dump is already the one in the database.
+#     EREGISTER_REF_REPORTING          Its branch (default master).
+#     EREGISTER_REPORTING_SQL_NAME     Pin one .sql file in that repo (default:
+#                                      every *.sql in it).
+#
 #   The installer also schedules a DAILY BACKUP of the live v1 database. This is
 #   not the pre-upgrade dump in <base>/v1/bahmni-backup — that one is taken once,
 #   from the 0.92 stack, and is what the restore reads. This is the rolling
@@ -107,7 +119,8 @@
 #   After a successful upgrade, the installer offers to schedule a job that
 #   periodically pulls the v1 asset/config repos (standard-config-ls,
 #   implementer-interface-release, openmrs-v1-modules, clinical-obs-forms,
-#   dhisconnector_mappings_v1, eregister_concepts_release_v1) via a systemd
+#   dhisconnector_mappings_v1, eregister_concepts_release_v1,
+#   openmrs_reporting_release) via a systemd
 #   timer, or an /etc/cron.d entry
 #   where systemd is absent. Control it:
 #     EREGISTER_AUTO_PULL=0            Disable the feature entirely.

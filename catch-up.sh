@@ -9,8 +9,11 @@
 # backup and restarts everything.
 #
 #   Read-mostly: every check is read-only and no repo with local changes is ever
-#   reset. The ONE exception is the last job — it recreates the EMR service so
-#   everything refreshed above is actually loaded:
+#   reset. TWO steps write. The first imports the OpenMRS report definitions
+#   (openmrs_reporting_release -> the serialized_object table of the 'openmrs'
+#   database), after dumping that table to bahmni-backup so it can be undone —
+#   skip it with --no-reporting. The second is the last job: it recreates the
+#   EMR service so everything refreshed above is actually loaded:
 #
 #       docker compose up -d --force-recreate --renew-anon-volumes openmrs
 #
@@ -23,13 +26,19 @@
 #   2. clones/fast-forwards every dependency repo the installer pulls:
 #      clinical-obs-forms, eregister_concepts_release_v1,
 #      implementer-interface-release, standard-config-ls, bahmni-docker-ls,
-#      dhisconnector_mappings_v1, openmrs-v1-modules — and the site's own
-#      upgrade-to-v1 checkout
+#      dhisconnector_mappings_v1, openmrs-v1-modules,
+#      openmrs_reporting_release — and the site's own upgrade-to-v1 checkout
 #   3. reinstalls the generated helper scripts from the current release
 #   4. checks all FOUR scheduled jobs (repo auto-pull, daily clinical form
 #      import, daily concept-dictionary import, daily database backup) and
 #      installs whichever is missing
 #   5. runs the form import (only forms whose content changed are deployed)
+#   5b. imports the OpenMRS report definitions from openmrs_reporting_release
+#      into the 'openmrs' database of the openmrsdb service. This is the ONE
+#      import catch-up performs itself: it replaces a single table
+#      (serialized_object — the report library), takes a pre-import backup of it
+#      first, and does nothing at all when the dump in the clone is already the
+#      one in the database. --no-reporting skips it
 #   6. reports on the concept dictionary: which dump is on disk, and whether it
 #      is the one actually imported. Catch-up never imports it itself — that is
 #      the daily concept job's business (or ./import-concepts.sh by hand)
@@ -46,8 +55,8 @@
 # USAGE
 #   curl -fsSL <raw>/catch-up.sh | bash
 #   ./catch-up.sh [--yes] [--no-stack] [--no-forms] [--no-concepts]
-#                 [--no-db-backup] [--no-recreate] [--force-repos]
-#                 [--install-dir DIR] [--no-color] [--help]
+#                 [--no-reporting] [--no-db-backup] [--no-recreate]
+#                 [--force-repos] [--install-dir DIR] [--no-color] [--help]
 #
 #   -y, --yes        Non-interactive; assume "yes" at every prompt.
 #   --no-stack       Do not fast-forward bahmni-docker-ls (the compose files the
@@ -56,6 +65,9 @@
 #   --no-concepts    Leave the concept dictionary alone: skip the concept-count
 #                    query, and neither install nor refresh the daily
 #                    concept-import job.
+#   --no-reporting   Do not import the OpenMRS report definitions from the
+#                    openmrs_reporting_release clone. The repo is still cloned
+#                    and fast-forwarded; only the database import is skipped.
 #   --no-db-backup   Leave the daily database backup alone: neither install nor
 #                    refresh it, and do not report on the dumps it has taken.
 #   --no-recreate    Do NOT recreate the EMR service at the end. Nothing then
@@ -80,6 +92,10 @@
 #   EREGISTER_CATCHUP_STACK_REPO=0    same as --no-stack
 #   EREGISTER_CATCHUP_DB_CHECK=0      skip the concept-count query
 #   EREGISTER_CATCHUP_RECREATE=0      same as --no-recreate
+#   EREGISTER_IMPORT_REPORTING=0      same as --no-reporting
+#   EREGISTER_REPORTING_SQL_NAME      import only this file from the reporting
+#                                     clone (default: every *.sql in it)
+#   EREGISTER_REF_REPORTING           its branch (default master)
 #   EREGISTER_CONCEPT_IMPORT=0        do not install/refresh the concept job
 #   EREGISTER_CONCEPT_IMPORT_CRON     its schedule (default '30 4 * * *')
 #   EREGISTER_DB_BACKUP=0             do not install/refresh the daily DB backup
@@ -102,8 +118,9 @@ EREGISTER_UPGRADE_REF="${EREGISTER_UPGRADE_REF:-main}"
 BOOTSTRAP_DIR=""   # temp dir holding downloaded modules; cleaned up on EXIT
 
 # Everything the reconcile touches: the repo updater (verify), the DB probe
-# (concepts), the scheduled jobs (autopull, dbbackup, forms) and the checks
-# themselves.
+# (concepts), the report definition import (reporting — it reuses the DB
+# plumbing in concepts.sh, so that must be sourced first), the scheduled jobs
+# (autopull, dbbackup, forms) and the checks themselves.
 EREGISTER_MODULES=(
   core/config.sh
   core/logging.sh
@@ -113,6 +130,7 @@ EREGISTER_MODULES=(
   system/deps.sh
   upgrade/verify.sh
   upgrade/concepts.sh
+  upgrade/reporting.sh
   upgrade/autopull.sh
   upgrade/dbbackup.sh
   upgrade/forms.sh
@@ -459,6 +477,9 @@ parse_catchup_args() {
       # Same meaning as in install.sh: leave the concept dictionary alone —
        # no DB probe, and do not install or refresh its daily job.
       --no-concepts)  CATCHUP_DB_CHECK="0"; CONCEPT_IMPORT="0" ;;
+      # The report definitions ARE imported by this script (see catchup_reporting
+      # in lib/upgrade/catchup.sh for why that is safe); this opts out of it.
+      --no-reporting) IMPORT_REPORTING="0" ;;
       --install-dir)  INSTALL_BASE="${2:?--install-dir needs a value}"; shift ;;
       --no-color)     USE_COLOR="no" ;;
       -h|--help)      usage; exit 0 ;;
@@ -483,8 +504,10 @@ main() {
 
 banner_catchup() {
   info "eRegister v1 catch-up — reconciling this site with the current release."
-  info "Read-mostly, with one exception: the '${EMR_SERVICE}' service is recreated at"
-  info "the end so the refreshed config, omods and forms are loaded (--no-recreate skips it)."
+  info "Read-mostly, with two exceptions: the report definitions are imported into"
+  info "'${DB_NAME}' (backed up first; --no-reporting skips it), and the '${EMR_SERVICE}' service is"
+  info "recreated at the end so the refreshed config, omods and forms are loaded"
+  info "(--no-recreate skips it)."
 }
 
 main "$@"

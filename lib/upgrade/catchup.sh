@@ -34,6 +34,13 @@
 #      daily concept job loads a changed dictionary on its own. What this
 #      reports is whether the dump on disk is the one in the database, and
 #      whether anything is scheduled to close that gap.
+#   5b. the report definitions              -> IMPORTED, the one import this
+#      script performs itself. The openmrs_reporting_release dump replaces a
+#      single table (serialized_object, the report library) — a small enough
+#      blast radius to do here, with a pre-import backup first — and it is
+#      skipped outright when its content is already the one in the database.
+#      Nothing else is scheduled to load it, so reporting a gap here would leave
+#      that gap open forever.
 #   6. the nightly database dumps           -> reported: how many, and how old
 #      the newest is. A backup job that has been failing for a fortnight looks
 #      exactly like one that is working until someone counts the files.
@@ -47,7 +54,7 @@
 # Depends on: logging, prompt (confirm), as_root() (privilege),
 #             git_clone_or_update() (verify), has_systemd() + auto-pull
 #             installers (autopull), the form installers (forms), the database
-#             backup installers (dbbackup).
+#             backup installers (dbbackup), import_reporting() (reporting).
 # =============================================================================
 
 # Report rows, collected as "STATUS|CATEGORY|NAME|DETAIL" and rendered at the
@@ -90,6 +97,7 @@ catchup_expected_repos() {
     "clinical-obs-forms|${REPO_OBS_FORMS}|${V1_DIR}/clinical-obs-forms|${REF_OBS_FORMS}|asset" \
     "dhisconnector_mappings_v1|${REPO_DHIS_MAPPINGS}|${V1_DIR}/dhisconnector_mappings_v1|${REF_DHIS_MAPPINGS}|asset" \
     "eregister_concepts_release_v1|${REPO_CONCEPTS}|${V1_DIR}/eregister_concepts_release_v1|${REF_CONCEPTS}|asset" \
+    "openmrs_reporting_release|${REPO_REPORTING}|${V1_DIR}/openmrs_reporting_release|${REF_REPORTING}|asset" \
     "bahmni_config (0.92)|${REPO_CONFIG_092}|${BACKUP_DIR}/bahmni_config|${REF_CONFIG_092}|pinned"
 }
 
@@ -564,6 +572,41 @@ catchup_concepts() {
 }
 
 # -----------------------------------------------------------------------------
+# catchup_reporting — import the OpenMRS report definitions, for real.
+#
+# The one import catch-up performs itself, and the reason it can:
+#   * it replaces ONE table, serialized_object — the report/cohort/indicator
+#     definitions the Reports app lists. No patient data, no concepts, no obs.
+#   * a pre-import dump of that table goes to BACKUP_DIR first, so it is
+#     undoable with a single mysql < file.
+#   * it is content-addressed: a clone whose dump is already the one in the
+#     database costs a sha256 and stops there, so running catch-up nightly
+#     never re-imports the same definitions.
+#   * nothing else schedules it. The concept dictionary has a daily job to
+#     defer to; the report definitions do not, so "catch-up reports a gap and
+#     leaves it" would leave the gap open forever.
+#
+# The heavy lifting is in lib/upgrade/reporting.sh; this only turns the status
+# it comes back with into a report row.
+# -----------------------------------------------------------------------------
+catchup_reporting() {
+  # import_reporting prints its own step banner.
+  # `|| true`: a failed import is a GAP row, not a reason to lose the report.
+  import_reporting || true
+
+  case "${REPORTING_STATUS:-}" in
+    imported) _cu_row FIXED reporting "definitions" "${REPORTING_DETAIL}" ;;
+    current)  _cu_row OK    reporting "definitions" "${REPORTING_DETAIL}" ;;
+    disabled) _cu_row SKIP  reporting "definitions" "${REPORTING_DETAIL}" ;;
+    declined) _cu_row SKIP  reporting "definitions" "${REPORTING_DETAIL}" ;;
+    no-db)    _cu_row GAP   reporting "definitions" "${REPORTING_DETAIL}" ;;
+    no-dump)  _cu_row GAP   reporting "dump"        "${REPORTING_DETAIL}" ;;
+    failed)   _cu_row GAP   reporting "definitions" "${REPORTING_DETAIL:-import failed}" ;;
+    *)        _cu_row GAP   reporting "definitions" "import did not report a status" ;;
+  esac
+}
+
+# -----------------------------------------------------------------------------
 # catchup_db_backups — REPORT ONLY: are the nightly dumps actually happening?
 #
 # The schedule row above says a timer exists. This one says the timer is
@@ -796,6 +839,13 @@ catchup_report() {
       by hand:     ${UPGRADE_REPO_DIR}/import-concepts.sh
     An imported dictionary is only visible after ${EMR_SERVICE} restarts.
 
+  Report definitions — imported by this script, from the clone at
+  ${REPORTING_DIR}:
+      re-import:   sudo ${UPGRADE_REPO_DIR}/catch-up.sh   (skipped when already current)
+      force one:   sudo rm ${REPORTING_IMPORT_STATE}, then run that again
+      undo one:    the pre-import dump in ${BACKUP_DIR}/reporting-preimport-*.sql
+    New reports only appear after ${EMR_SERVICE} restarts.
+
   Database backups — nightly (${DB_BACKUP_CRON}), kept ${DB_BACKUP_KEEP} deep:
       take one now: sudo ${DB_BACKUP_RUNNER}
       they live in: ${DB_BACKUP_DIR}
@@ -827,6 +877,7 @@ catch_up() {
   catchup_schedules
   catchup_forms
   catchup_concepts
+  catchup_reporting     # the one import catch-up does itself (see the function)
   catchup_db_backups
   catchup_services      # health of the site AS FOUND, before anything is reloaded
   # `|| true` because catch-up.sh runs under `set -e`: this is the only step
