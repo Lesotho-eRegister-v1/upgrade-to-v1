@@ -282,7 +282,8 @@ import_reporting() {
   # shellcheck disable=SC2086  # $tables is a deliberate word-split table list
   if ! _reporting_backup $tables; then
     warn "Continuing without a pre-import backup of the report definition tables."
-    if ! confirm "Import anyway, with no way to restore the current report definitions?"; then
+    if ! confirm "Import anyway, with no way to restore the current report definitions?" \
+                 "skip the report definition import"; then
       warn "Report definition import skipped by user."
       REPORTING_STATUS="declined"; REPORTING_DETAIL="declined (no pre-import backup could be taken)"
       return 0

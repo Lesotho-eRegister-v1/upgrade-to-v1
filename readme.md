@@ -106,6 +106,7 @@ lib/
 │   ├── logging.sh               # setup_colors, log/info/warn/error/success/step, banner
 │   ├── traps.sh                 # on_error, cleanup, install_traps
 │   ├── prompt.sh                # confirm, confirm_step, prompt_db_password
+│   │                             (a mistyped answer re-asks; it is never a "no")
 │   └── cli.sh                   # usage, parse_args, resolve_config, print_config
 ├── system/
 │   ├── platform.sh              # detect_platform

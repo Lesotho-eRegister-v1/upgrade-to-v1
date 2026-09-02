@@ -102,7 +102,8 @@ _forms_prompt_credentials() {
     IFS= read -rs p1 </dev/tty; printf '\n' >/dev/tty
     if [ -z "$p1" ]; then
       warn "Password cannot be empty."
-      confirm "Try again? (answering 'n' skips the form import)" || return 1
+      confirm "Try again? (answering 'n' skips the form import)" \
+        "skip the form import" || return 1
       continue
     fi
     printf '%sConfirm password: %s' "$C_WARN" "$C_RESET" >/dev/tty

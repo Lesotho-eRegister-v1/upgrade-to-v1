@@ -215,6 +215,7 @@ import_concepts() {
   if ! _concepts_backup; then
     warn "Continuing without a pre-import backup of the concept tables."
     confirm "Import anyway, with no way to restore the current concept tables?" \
+      "skip the concept import" \
       || { warn "Concept import skipped by user."; return 0; }
   fi
 

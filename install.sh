@@ -402,8 +402,11 @@ run_migration() {
   # --- overall go/no-go (each step below is also confirmed individually) --
   warn "Cautious mode: you will be asked to confirm EVERY step before it runs."
   warn "Answer 'n' at any prompt to stop safely (with rollback if the old stack"
-  warn "has already been frozen). Use --yes to auto-confirm all steps."
-  if ! confirm "Begin the upgrade ${CURRENT_VERSION_DEFAULT} -> ${TARGET_VERSION}?"; then
+  warn "has already been frozen). Anything that is neither a yes nor a no is"
+  warn "treated as a slip: the prompt asks whether you meant to stop, and repeats"
+  warn "itself if you did not. Use --yes to auto-confirm all steps."
+  if ! confirm "Begin the upgrade ${CURRENT_VERSION_DEFAULT} -> ${TARGET_VERSION}?" \
+                "quit without upgrading anything"; then
     error "Aborted by user."
     exit 1
   fi

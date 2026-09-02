@@ -23,6 +23,6 @@ detect_platform() {
   # full Bahmni stack is only exercised on Linux. Warn loudly on macOS.
   if [ "$OS" = "darwin" ]; then
     warn "macOS detected: the Bahmni Docker stack is supported only on Linux ${ARCH}."
-    confirm "Continue anyway?" || { error "Aborted by user."; exit 1; }
+    confirm "Continue anyway?" "quit here" || { error "Aborted by user."; exit 1; }
   fi
 }

@@ -17,7 +17,8 @@ detect_privilege() {
     info "Elevation required for ${INSTALL_BASE}; will use sudo."
     # Prime sudo so later steps don't stall mid-flow.
     if ! sudo -n true 2>/dev/null; then
-      confirm "Authorize sudo now?" || { error "Aborted: sudo required."; exit 1; }
+      confirm "Authorize sudo now?" "quit — sudo is required to continue" \
+        || { error "Aborted: sudo required."; exit 1; }
       sudo -v </dev/tty || { error "Could not obtain sudo."; exit 1; }
     fi
   else

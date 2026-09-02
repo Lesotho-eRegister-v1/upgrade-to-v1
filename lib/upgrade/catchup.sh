@@ -772,7 +772,7 @@ catchup_recreate_emr() {
   warn "config, omods and forms, and renews its anonymous volumes."
   warn "The EMR will be DOWN while it boots — normally 30+ minutes."
   warn "Patient data (the ${DB_SERVICE} service and its named volumes) is not touched."
-  if ! confirm "Recreate '${EMR_SERVICE}' now?"; then
+  if ! confirm "Recreate '${EMR_SERVICE}' now?" "leave ${EMR_SERVICE} as it is"; then
     _cu_row SKIP reload "$EMR_SERVICE" "declined — run it yourself: cd ${RESTORE_DIR} && ${DOCKER_COMPOSE} up -d --force-recreate --renew-anon-volumes ${EMR_SERVICE}"
     return 0
   fi

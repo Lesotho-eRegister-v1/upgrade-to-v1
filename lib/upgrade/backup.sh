@@ -68,21 +68,37 @@ resolve_emr_container() {
     return 1
   fi
 
+  # Looped, for the same reason confirm() is: a mistyped container name used to
+  # cost the pre-upgrade backup outright, with nothing but a warning to say so.
+  # A blank line still means "skip" — the prompt says as much — but a name that
+  # does not resolve now gets a second chance.
   local entered=""
-  printf '%sEnter the name of the running docker service hosting the EMR (leave blank to skip): %s' \
-    "$C_WARN" "$C_RESET" >/dev/tty
-  read -r entered </dev/tty || entered=""
-  if [ -z "$entered" ]; then
-    warn "Nothing entered — proceeding to the next step without a backup."
-    return 1
-  fi
-  if ! container_running "$entered"; then
-    warn "Container '${entered}' is not running — proceeding to the next step without a backup."
-    return 1
-  fi
-  EMR_CONTAINER="$entered"
-  success "Using EMR container: ${EMR_CONTAINER}"
-  return 0
+  while :; do
+    printf '%sEnter the name of the running docker service hosting the EMR (leave blank to skip): %s' \
+      "$C_WARN" "$C_RESET" >/dev/tty
+    # A failed read is end-of-input: treat it as the blank-line skip rather than
+    # re-asking a terminal that has nothing left to give.
+    read -r entered </dev/tty || entered=""
+    if [ -z "$entered" ]; then
+      warn "Nothing entered — proceeding to the next step without a backup."
+      return 1
+    fi
+    if container_running "$entered"; then
+      EMR_CONTAINER="$entered"
+      success "Using EMR container: ${EMR_CONTAINER}"
+      return 0
+    fi
+    warn "Container '${entered}' is not running."
+    if confirm "Carry on WITHOUT a backup of the ${CURRENT_VERSION_DEFAULT} database?" \
+               "carry on with no backup"; then
+      warn "Proceeding to the next step without a backup."
+      return 1
+    fi
+    # Plain `docker ps`, matching container_running above — the name has to come
+    # from the same listing that check reads, or the retry is guesswork.
+    info "Running containers, so you can copy the name exactly:"
+    docker ps --format '  {{.Names}}  ({{.Image}})' 2>/dev/null >&2 || true
+  done
 }
 
 take_backup() {
