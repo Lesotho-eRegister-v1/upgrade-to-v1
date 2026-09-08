@@ -12,6 +12,14 @@
 #   everything. This module does the opposite — it is a read-mostly reconcile
 #   that fixes gaps in place.
 #
+#   The clinical form import is no longer just one of those catch-up gaps: it
+#   is OWNED here. install.sh deliberately does none of it, because the forms go
+#   in over the EMR's REST API and the EMR is 30+ minutes from answering when
+#   the upgrade ends. So on a freshly installed site this module — not the
+#   installer — is what first installs the importer, writes its credentials,
+#   schedules the daily job and deploys a form. ./import-forms.sh is the other
+#   way in, for forms alone.
+#
 # WHAT IT MAY TOUCH
 #   Every check is read-only (`docker compose ps`), every git update is a
 #   fast-forward, and a repo with local changes is never reset. Exactly ONE step
@@ -27,7 +35,10 @@
 #   2. the generated helper scripts         -> rewritten from the current modules
 #   3. the scheduled jobs (auto-pull, forms, concept dictionary, database
 #      backup)                              -> installed if absent
-#   4. the clinical form import             -> run (only changed forms deploy)
+#   4. the clinical form import             -> INSTALLED here (importer,
+#      credentials, runner, daily timer) and then RUN. Not a repair of something
+#      install.sh did: install.sh never did it. Only changed forms deploy, and a
+#      changed form goes out as a new version.
 #   5. the concept dictionary               -> reported, never auto-imported.
 #      It drops and recreates the concept_*/drug* tables, which is too blunt to
 #      do behind an operator's back — and it no longer needs doing here: the
@@ -245,47 +256,55 @@ catchup_helper_scripts() {
     _cu_row SKIP script "$(basename "$AUTO_PULL_SCRIPT")" "auto-pull disabled (EREGISTER_AUTO_PULL=0)"
   fi
 
-  [ "$IMPORT_FORMS" = "1" ] || {
-    _cu_row SKIP script "form importer" "form import disabled (--no-forms)"
-    return 0
-  }
-
-  # --- form importer + its runner -----------------------------------------
+  # --- form importer, its credentials and its runner -----------------------
+  # This is where they are INSTALLED, not merely refreshed: install.sh does no
+  # form work at all, so on a site that has never run catch-up none of these
+  # three exist yet.
+  #
+  # Note the shape. Neither --no-forms nor a failed importer install may skip
+  # the database-backup and concept helpers below — they have nothing to do with
+  # forms, and a site that asked to leave its forms alone still needs the script
+  # that backs its database up. An early `return` here used to take both of them
+  # out with it, silently, which is exactly the sort of gap this script exists
+  # to close.
   local had_importer=0
   [ -x "$FORM_IMPORT_SCRIPT" ] && had_importer=1
-  if _forms_install_importer >/dev/null 2>&1; then
+  if [ "$IMPORT_FORMS" != "1" ]; then
+    _cu_row SKIP script "form importer" "form import disabled (--no-forms)"
+  elif ! _forms_install_importer >/dev/null 2>&1; then
+    # Nothing for the env file or the runner to point at, so those two rows are
+    # skipped — but only those two.
+    _cu_row GAP script "$(basename "$FORM_IMPORT_SCRIPT")" "could not be installed"
+  else
     if [ "$had_importer" = "1" ]; then
       _cu_row OK script "$(basename "$FORM_IMPORT_SCRIPT")" "present, refreshed from this release"
     else
       _cu_row FIXED script "$(basename "$FORM_IMPORT_SCRIPT")" "was missing — installed"
     fi
-  else
-    _cu_row GAP script "$(basename "$FORM_IMPORT_SCRIPT")" "could not be installed"
-    return 0
-  fi
 
-  # --- credentials for the unattended runs ---------------------------------
-  # Never overwrite a working env file: the password in it is the one the site
-  # actually uses, and this script may be running without any password at hand.
-  if as_root test -s "$FORM_IMPORT_ENV"; then
-    _cu_row OK config "$(basename "$FORM_IMPORT_ENV")" "present (left as-is)"
-  elif _forms_prompt_credentials; then
-    _forms_write_env >/dev/null 2>&1
-    _cu_row FIXED config "$(basename "$FORM_IMPORT_ENV")" "was missing — written for ${BAHMNI_USER}@${BAHMNI_URL}"
-  else
-    _cu_row GAP config "$(basename "$FORM_IMPORT_ENV")" "missing and no password given — the daily form import cannot run"
-  fi
-
-  local had_runner=0
-  [ -x "$FORM_IMPORT_RUNNER" ] && had_runner=1
-  if _forms_write_runner >/dev/null 2>&1; then
-    if [ "$had_runner" = "1" ]; then
-      _cu_row OK script "$(basename "$FORM_IMPORT_RUNNER")" "present, refreshed from this release"
+    # --- credentials for the unattended runs -------------------------------
+    # Never overwrite a working env file: the password in it is the one the site
+    # actually uses, and this script may be running without any password at hand.
+    if as_root test -s "$FORM_IMPORT_ENV"; then
+      _cu_row OK config "$(basename "$FORM_IMPORT_ENV")" "present (left as-is)"
+    elif _forms_prompt_credentials; then
+      _forms_write_env >/dev/null 2>&1
+      _cu_row FIXED config "$(basename "$FORM_IMPORT_ENV")" "was missing — written for ${BAHMNI_USER}@${BAHMNI_URL}"
     else
-      _cu_row FIXED script "$(basename "$FORM_IMPORT_RUNNER")" "was missing — installed"
+      _cu_row GAP config "$(basename "$FORM_IMPORT_ENV")" "missing and no password given — the daily form import cannot run"
     fi
-  else
-    _cu_row GAP script "$(basename "$FORM_IMPORT_RUNNER")" "could not be written"
+
+    local had_runner=0
+    [ -x "$FORM_IMPORT_RUNNER" ] && had_runner=1
+    if _forms_write_runner >/dev/null 2>&1; then
+      if [ "$had_runner" = "1" ]; then
+        _cu_row OK script "$(basename "$FORM_IMPORT_RUNNER")" "present, refreshed from this release"
+      else
+        _cu_row FIXED script "$(basename "$FORM_IMPORT_RUNNER")" "was missing — installed"
+      fi
+    else
+      _cu_row GAP script "$(basename "$FORM_IMPORT_RUNNER")" "could not be written"
+    fi
   fi
 
   # --- database backup script (independent of everything else here) --------
@@ -457,9 +476,12 @@ catchup_schedules() {
 }
 
 # -----------------------------------------------------------------------------
-# catchup_forms — run the form import once, now. Cheap and safe to repeat: the
-# importer deploys only the forms whose content changed since the last run, and
-# a changed form goes out as a NEW version, so nothing live is overwritten.
+# catchup_forms — run the form import once, now. On a fresh site this is the
+# first time its forms are deployed at all: install.sh no longer imports them,
+# so until this runs (or ./import-forms.sh does) the clone on disk has never
+# reached the EMR. Cheap and safe to repeat: the importer deploys only the forms
+# whose content changed since the last run, and a changed form goes out as a NEW
+# version, so nothing live is overwritten.
 # -----------------------------------------------------------------------------
 catchup_forms() {
   step "Clinical observation forms"

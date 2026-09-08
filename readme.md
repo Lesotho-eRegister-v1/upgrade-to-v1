@@ -10,7 +10,12 @@ These scripts keep gaining steps — asset repos, the concept dictionary, the
 nightly repo auto-pull, the daily clinical form import. A site installed from an
 earlier version never got the newer ones. **This one line checks everything the
 installer is meant to have set up and redoes only what is missing or out of
-date**, on a live site:
+date**, on a live site.
+
+It is also the **only** thing that imports the clinical observation forms.
+`install.sh` deliberately does not: the forms go in over the EMR's REST API, and
+the EMR is still 30+ minutes from answering when the upgrade ends. So run this
+once the stack is up — on a site installed today just as much as on an old one:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Lesotho-eRegister-v1/upgrade-to-v1/refs/heads/main/catch-up.sh | bash
@@ -58,7 +63,7 @@ far** it got, not merely that it ran:
 | `stage=` | meaning | what a re-run does |
 |---|---|---|
 | *(no file)* | nothing has been installed | runs the whole upgrade |
-| `migrated` | the stack was migrated, verified and started, but the post-install steps (concept import, form import, auto-updates) had not finished | redoes the upgrade from the top, **reusing the backup already in `/var/lib/v1/bahmni-backup`**, then finishes the outstanding steps |
+| `migrated` | the stack was migrated, verified and started, but the post-install steps (the concept job, the database backup, auto-updates) had not finished | redoes the upgrade from the top, **reusing the backup already in `/var/lib/v1/bahmni-backup`**, then finishes the outstanding steps |
 | `complete` | the whole run finished | prints a reference card and exits with "nothing to do" |
 
 Only `complete` short-circuits. Before this was recorded, a Ctrl-C or a dropped
@@ -121,7 +126,8 @@ lib/
     ├── postinstall.sh           # post_verify, next_steps
     ├── concepts.sh              # import_concepts + the scheduled/delayed job
     ├── reporting.sh             # import_reporting (openmrs_reporting_release -> openmrsdb)
-    ├── forms.sh                 # install_form_import (clinical-obs-forms -> EMR, daily)
+    ├── forms.sh                 # clinical-obs-forms -> EMR, daily. Used by catch-up.sh
+    │                            #   and import-forms.sh — NOT by install.sh
     ├── autopull.sh              # install_auto_pull (systemd timer / cron.d)
     ├── dbbackup.sh              # install_db_backup (nightly openmrsdb dump, daily)
     └── catchup.sh               # catch_up (reconcile a deployed site + report)
@@ -307,13 +313,23 @@ blocking — run `./import-concepts.sh` again later, or leave it to the daily jo
 
 # Importing the clinical observation forms
 
-The `clinical-obs-forms` repo holds Bahmni Form Builder JSON exports. At the end
-of a run the installer deploys them into the running EMR over its REST API —
-concept UUID fix-up, `POST /form`, save body, save translations — which is
-exactly what the Implementer Interface's **Import** button does, minus the
-~1700 parallel fetches that produce its "Failed to fetch" errors.
+The `clinical-obs-forms` repo holds Bahmni Form Builder JSON exports. They are
+deployed into the running EMR over its REST API — concept UUID fix-up,
+`POST /form`, save body, save translations — which is exactly what the
+Implementer Interface's **Import** button does, minus the ~1700 parallel fetches
+that produce its "Failed to fetch" errors.
 
-It installs:
+> **`install.sh` does not do this step at all.** The EMR needs 30+ minutes —
+> hours on site hardware — before it answers a REST call, so when the upgrade
+> finishes there is nothing to import into. The installer clones the repo and
+> stops there: no importer, no credentials file, no timer.
+>
+> **`./catch-up.sh` owns the whole step** — installing the importer, writing the
+> credentials, installing the runner, scheduling the daily job and running the
+> first import. `./import-forms.sh` does the same for forms alone. Run either
+> one once the stack is actually up.
+
+Whichever you run installs:
 
 | Path | What it is |
 | --- | --- |
@@ -354,8 +370,8 @@ sudo /usr/local/bin/bahmni-form-import.sh -k --dry-run  # validate concepts only
 sudo /usr/local/bin/bahmni-form-import.sh -k --force     # re-deploy everything
 ```
 
-Re-install or re-schedule the whole thing (also useful if it was skipped during
-the upgrade):
+Set it all up — or re-install and re-schedule it — for forms alone, without the
+rest of the catch-up:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Lesotho-eRegister-v1/upgrade-to-v1/refs/heads/main/import-forms.sh | bash
@@ -556,8 +572,10 @@ What it does, in order:
    and installs whichever is absent, as a systemd timer or an `/etc/cron.d`
    entry. Hosts with neither get the exact cron line to add by hand. This is how
    a site installed before the backup job existed gets one.
-5. **Runs the clinical form import** — only forms whose content changed are
-   deployed, so on a current site this is a no-op.
+5. **Runs the clinical form import** — on a freshly installed site this is the
+   first time its forms reach the EMR at all, because `install.sh` does not
+   import them. Only forms whose content changed are deployed, so on a site that
+   is already current it is a no-op.
 6. **Reports on the concept dictionary** — which dump is on disk, whether it is
    the one actually imported (comparing its sha256 against the import marker),
    and the live `concept` row count. Catch-up never imports it itself: that

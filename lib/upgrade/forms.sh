@@ -3,6 +3,16 @@
 # lib/upgrade/forms.sh — deploy the clinical observation forms and schedule the
 # daily job that keeps them deployed.
 #
+# WHO LOADS THIS
+#   ./catch-up.sh (via lib/upgrade/catchup.sh, which calls the _forms_* helpers
+#   below one at a time so it can report on each) and ./import-forms.sh (via
+#   install_form_import, the all-in-one entry at the bottom).
+#
+#   NOT install.sh. The forms are deployed over the EMR's REST API, and the EMR
+#   needs 30+ minutes — hours on site hardware — before it answers one; at the
+#   moment the upgrade finishes there is nothing to import into. The whole step
+#   therefore belongs to catch-up, which is run once the stack is actually up.
+#
 # The clinical-obs-forms repo (cloned to <base>/v1/clinical-obs-forms by
 # fetch_repos, and refreshed by the auto-pull job) holds Bahmni Form Builder
 # JSON exports. bin/bahmni_form_import.sh replays exactly what the Implementer
@@ -125,7 +135,7 @@ _forms_write_env() {
   chmod 0600 "$tmp"
   {
     printf '%s\n' "# eRegister v1 — settings for the scheduled clinical form import."
-    printf '%s\n' "# Written by the installer; re-running it overwrites this file."
+    printf '%s\n' "# Written by ./catch-up.sh or ./import-forms.sh; re-running either overwrites it."
     printf '%s\n' "# Contains a password: keep it mode 0600."
     printf 'BAHMNI_URL=%s\n'        "$BAHMNI_URL"
     printf 'BAHMNI_USER=%s\n'       "$BAHMNI_USER"
@@ -159,7 +169,8 @@ _forms_write_runner() {
 # Sources the credentials file, refreshes the clinical-obs-forms clone, and
 # runs the Bahmni form importer over it. Only forms whose CONTENT changed since
 # the last run are deployed (sha256 per form, recorded in the state file), so
-# this is safe to run every day. Installed by install.sh; safe to run by hand.
+# this is safe to run every day. Installed by ./catch-up.sh (or ./import-forms.sh);
+# safe to run by hand.
 # Generated file: re-running the installer overwrites it.
 set -uo pipefail
 HEADER
@@ -247,7 +258,7 @@ _forms_install_systemd_timer() {
   local tim="/etc/systemd/system/${FORM_IMPORT_UNIT}.timer"
 
   printf '%s\n' \
-    "# Written by the eRegister v1 installer — re-running it overwrites this file." \
+    "# Written by ./catch-up.sh (or ./import-forms.sh) — re-running either overwrites it." \
     "[Unit]" \
     "Description=eRegister v1 — import changed clinical observation forms" \
     "After=network-online.target docker.service" \
@@ -260,7 +271,7 @@ _forms_install_systemd_timer() {
   as_root chmod 0644 "$svc"
 
   printf '%s\n' \
-    "# Written by the eRegister v1 installer — re-running it overwrites this file." \
+    "# Written by ./catch-up.sh (or ./import-forms.sh) — re-running either overwrites it." \
     "[Unit]" \
     "Description=eRegister v1 — daily schedule for the clinical form import" \
     "" \
@@ -286,7 +297,7 @@ _forms_install_systemd_timer() {
 _forms_install_cron_job() {
   local cronfile="/etc/cron.d/${FORM_IMPORT_UNIT}"
   printf '%s\n' \
-    "# Written by the eRegister v1 installer — remove this file to disable the daily form import." \
+    "# Written by ./catch-up.sh (or ./import-forms.sh) — remove this file to disable the daily form import." \
     "SHELL=/bin/bash" \
     "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
     "${FORM_IMPORT_CRON} root ${FORM_IMPORT_RUNNER}" \
@@ -333,10 +344,11 @@ run_form_import() {
 }
 
 # -----------------------------------------------------------------------------
-# install_form_import — top-level entry, called from main() after the concept
-# import, and from the standalone import-forms.sh.
-# Returns non-zero on failure; the caller treats that as advisory (the upgrade
-# is already finalized by the time this runs).
+# install_form_import — all-in-one entry: install, credential, schedule and run.
+# Used by the standalone import-forms.sh. install.sh does NOT call it (see WHO
+# LOADS THIS at the top), and catch-up.sh does not either — catch-up drives the
+# _forms_* helpers directly so it can report a row per piece.
+# Returns non-zero on failure.
 # -----------------------------------------------------------------------------
 install_form_import() {
   step "Clinical observation forms"

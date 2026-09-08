@@ -8,7 +8,7 @@
 #
 # USAGE
 #   ./install.sh [--yes] [--force] [--install-dir DIR] [--target-ref REF]
-#                [--no-concepts] [--no-forms] [--no-db-backup] [--help]
+#                [--no-concepts] [--no-db-backup] [--help]
 #
 # FLAGS / ENV
 #   -y, --yes            Non-interactive; assume "yes" to all prompts (CI/automation).
@@ -26,8 +26,10 @@
 #                        Default: empty (each repo uses its own default ref).
 #   --no-concepts        Do not install the concept-dictionary job at all — no
 #                        delayed first import, no daily job.
-#   --no-forms           Skip the post-install clinical form import (and its
-#                        daily job).
+#   --no-forms           Accepted for compatibility, but INERT here: this script
+#                        no longer touches the clinical forms at all. The flag
+#                        still means something to ./catch-up.sh and
+#                        ./import-forms.sh, which own that step now.
 #   --no-db-backup       Do not install the daily backup of the v1 database.
 #                        The site is then left with NO routine backup at all.
 #   --no-color           Disable ANSI colors.
@@ -64,18 +66,25 @@
 #     EREGISTER_CONCEPT_IMPORT_RESTART_EMR=1  restart the EMR after an import
 #                                           (off by default: 30+ min downtime).
 #
-#   After the concept dictionary is in place, the clinical observation forms
-#   shipped in the clinical-obs-forms clone are imported into the running EMR
-#   over its REST API — the scripted equivalent of clicking "Import" in the
-#   Implementer Interface for every form file. The importer
-#   (bin/bahmni_form_import.sh) is installed to /usr/local/bin/bahmni-form-import.sh
-#   and scheduled to run DAILY so forms pushed to that repo go live on their own.
-#   Only forms whose CONTENT changed are deployed (sha256 per form, recorded in
-#   <base>/v1/.bahmni_form_import_state.json), and a changed form is deployed as
-#   a NEW version rather than overwriting the live one — so a same-named file
+#   The CLINICAL OBSERVATION FORMS are cloned but not imported here either, and
+#   for a sharper version of the same reason. They go in over the EMR's REST API
+#   — the scripted equivalent of clicking "Import" in the Implementer Interface
+#   for every form file — and that API is not answering yet: the EMR needs 30+
+#   minutes to boot, hours on site hardware. An import attempted at this point
+#   either blocks the operator for the whole boot or fails for nothing. So this
+#   script installs NO form importer, NO credentials file and NO daily timer;
+#   the ENTIRE form step now belongs to ./catch-up.sh.
+#
+#   The clone lands at <base>/v1/clinical-obs-forms and the auto-pull job keeps
+#   it current. ./catch-up.sh installs the importer (bin/bahmni_form_import.sh
+#   -> /usr/local/bin/bahmni-form-import.sh), writes the 0600 credentials file,
+#   installs the runner, schedules the DAILY job and runs the import once. Only
+#   forms whose CONTENT changed are deployed (sha256 per form, recorded in
+#   <base>/v1/.bahmni_form_import_state.json), and a changed form goes out as a
+#   NEW version rather than overwriting the live one — so a same-named file
 #   holding a new export counts as new work, while an unchanged file that was
-#   merely re-pulled is skipped. Control it:
-#     EREGISTER_IMPORT_FORMS=0         Skip it (same as --no-forms).
+#   merely re-pulled is skipped. ./import-forms.sh does the same for forms alone.
+#     EREGISTER_IMPORT_FORMS=0         Skip it there (same as --no-forms).
 #     EREGISTER_BAHMNI_URL/_USER/_PASS EMR endpoint and account (default
 #                                      https://localhost, superman; the password
 #                                      is prompted when not set).
@@ -83,8 +92,7 @@
 #     EREGISTER_FORM_IMPORT_ONCALENDAR systemd OnCalendar (default '*-*-* 03:30:00').
 #     EREGISTER_FORM_IMPORT_CRON       cron schedule    (default '30 3 * * *').
 #   Credentials for the unattended runs live in /etc/eregister/form-import.env
-#   (0600). Re-run it on its own at any time with ./import-forms.sh, or
-#   sudo /usr/local/bin/eregister-form-import.sh.
+#   (0600), written by whichever of those two scripts you run.
 #
 #   The OpenMRS REPORT DEFINITIONS are cloned but not imported here, for the
 #   same reason as the concept dictionary: openmrs_reporting_release ships a
@@ -133,7 +141,7 @@
 #   <base>/v1/.eregister-upgrade-complete records how far the last run got, not
 #   merely that one happened:
 #     stage=migrated   the stack was migrated, verified and started, but the
-#                      post-install steps (concept import, form import,
+#                      post-install steps (the concept job, the database backup,
 #                      auto-updates) had not finished.
 #     stage=complete   the whole run finished.
 #   Only stage=complete short-circuits with "nothing to do". stage=migrated
@@ -144,13 +152,14 @@
 #   that file, replacing anything entered since it was made. A marker written by
 #   an installer older than this one carries no stage; what is still outstanding
 #   is then inferred from what those steps leave on disk (the concept-import
-#   state file, the form-import runner).
+#   runner or its state file).
 #
 #   ALREADY ON v1? Do not re-run this script to pick up changes made to it since
 #   your site was installed — it freezes the old stack, restores a backup and
 #   restarts everything. Run ./catch-up.sh instead: it reconciles a live site
-#   (repos, helper scripts, both scheduled jobs, the form import) and reports on
-#   service health. The only container it touches is the EMR service, which it
+#   (repos, helper scripts, the scheduled jobs, the report definitions) and
+#   reports on service health. It also owns the clinical form import outright —
+#   that step happens NOWHERE else but there and ./import-forms.sh. The only container it touches is the EMR service, which it
 #   recreates as its last job so the refreshed config/omods/forms are loaded
 #   (--no-recreate skips that); the rest of the stack is left running.
 #
@@ -159,7 +168,7 @@
 #       lib/core/    config, logging, traps, prompt, cli
 #       lib/system/  platform, privilege, deps
 #       lib/upgrade/ verify, detect, backup, migrate, rollback, postinstall,
-#                    concepts, forms, autopull, dbbackup
+#                    concepts, autopull, dbbackup
 #     Override the lib location with EREGISTER_LIB_DIR (e.g. for system install).
 #   * `curl | bash` still works: with no lib/ beside it, the script fetches the
 #     modules itself — first by shallow-cloning the repo (which also resolves
@@ -199,7 +208,6 @@ EREGISTER_MODULES=(
   upgrade/rollback.sh
   upgrade/postinstall.sh
   upgrade/concepts.sh
-  upgrade/forms.sh
   upgrade/autopull.sh
   upgrade/dbbackup.sh
 )
@@ -488,8 +496,8 @@ run_migration() {
 }
 
 # =============================================================================
-# run_post_install — the long tail of the install: the concept dictionary, the
-# clinical forms and the auto-update job, each with its own schedule.
+# run_post_install — the long tail of the install: the database backup, the
+# concept dictionary and the auto-update job, each with its own schedule.
 #
 # The migration is already finalized before any of this runs, so every step here
 # is ADVISORY: a failure warns and names the standalone script that redoes it,
@@ -523,12 +531,18 @@ run_post_install() {
     warn "Scheduled concept import NOT installed. Add it later with: ./import-concepts.sh --schedule"
   fi
 
-  # --- import the clinical observation forms ------------------------------
-  # This installs the importer, deploys the forms once, and schedules the daily
-  # job.
-  if ! install_form_import; then
-    warn "Clinical forms NOT imported. Run it again later with: ./import-forms.sh"
-  fi
+  # --- the clinical observation forms: NOT DONE HERE -----------------------
+  # Deliberately absent. The forms are deployed over the EMR's REST API, and the
+  # EMR has only just been started — it needs 30+ minutes before it answers,
+  # often hours on site hardware. Installing the importer here bought nothing
+  # (the import itself could not run), while the run that followed it either
+  # held the operator for the whole boot or failed and printed a log to ignore.
+  #
+  # The whole step — importer, credentials, runner, daily schedule and the first
+  # import — now lives in ./catch-up.sh, which is run once the stack is up, and
+  # in ./import-forms.sh for forms on their own. next_steps() says so, and says
+  # it loudly, because nothing on this host is importing forms until one of them
+  # has been run.
 
   # --- schedule automatic repo updates ------------------------------------
   # Declining here is NOT an abort: the upgrade is already done, so this is a

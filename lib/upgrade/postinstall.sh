@@ -26,8 +26,9 @@ post_verify() {
   [ -d "${V1_DIR}/standard-config-ls/.git" ]  || verify_fail "standard-config-ls missing."
   [ -d "${BACKUP_DIR}/bahmni_config/.git" ]   || verify_fail "bahmni_config missing."
   [ "$ok" = "1" ] || return 1
-  # The migration is done and verified — but the post-install steps (concept
-  # import, form import, auto-updates) have NOT run yet, so record only that.
+  # The migration is done and verified — but the post-install steps (the
+  # database backup, the concept job, auto-updates) have NOT run yet, so record
+  # only that.
   # See mark_stage() for why the difference matters.
   mark_stage migrated
   persist_env
@@ -40,8 +41,8 @@ post_verify() {
 # It records HOW FAR a run got, not merely that one happened:
 #
 #   stage=migrated   the stack was migrated, verified and started, but the
-#                    post-install steps (concept import, form import, the
-#                    auto-update job) had not finished.
+#                    post-install steps (the database backup, the concept job,
+#                    the auto-update job) had not finished.
 #   stage=complete   the whole run finished.
 #
 # That distinction is the whole point of the file. Those post-install steps load
@@ -62,7 +63,7 @@ mark_stage() {
   {
     printf '# eRegister v1 install marker — written by install.sh.\n'
     printf '# stage=migrated: stack migrated, verified and started; post-install\n'
-    printf '#                 steps (concepts, forms, auto-update) still pending.\n'
+    printf '#                 steps (concepts, backup, auto-update) still pending.\n'
     printf '# stage=complete: the whole install finished.\n'
     printf 'stage=%s\n'   "$stage"
     printf 'version=%s\n' "$TARGET_VERSION"
@@ -89,7 +90,7 @@ resolve_install_stage() {
   # A legacy marker carries no stage, so decide from what the post-install steps
   # leave behind on disk. A step that is switched off for this run cannot be
   # outstanding, so it counts as satisfied.
-  local stage concepts_done=0 forms_done=0
+  local stage concepts_done=0
   stage="$(read_stage)"
   if [ "$stage" != "legacy" ]; then printf '%s' "$stage"; return 0; fi
 
@@ -99,11 +100,12 @@ resolve_install_stage() {
   if [ "${CONCEPT_IMPORT:-1}" != "1" ] || [ -f "$CONCEPT_IMPORT_RUNNER" ] || [ -f "$CONCEPT_IMPORT_STATE" ]; then
     concepts_done=1
   fi
-  if [ "${IMPORT_FORMS:-1}" != "1" ] || [ -f "$FORM_IMPORT_STATE" ] || [ -f "$FORM_IMPORT_RUNNER" ]; then
-    forms_done=1
-  fi
 
-  if [ "$concepts_done" = "1" ] && [ "$forms_done" = "1" ]; then
+  # Forms are deliberately NOT part of this. install.sh no longer owes anything
+  # for them — ./catch-up.sh does the whole step — so a host with no form runner
+  # is not an unfinished install, and treating it as one would send every legacy
+  # site back through a full migrate-and-restore it does not need.
+  if [ "$concepts_done" = "1" ]; then
     printf 'complete'
   else
     printf 'migrated'
@@ -201,13 +203,15 @@ _next_steps_concepts_schedule_line() {
 
 _next_steps_forms_line() {
   # Don't describe a schedule that was never installed. The runner is what the
-  # timer/cron entry calls, so its absence means nothing is importing forms.
+  # timer/cron entry calls, so its absence means nothing is importing forms —
+  # which is the NORMAL state at the end of a fresh install, because this script
+  # no longer sets any of it up. Say what to run, not just what is missing.
   if [ -f "$FORM_IMPORT_RUNNER" ]; then
     printf "is imported into %s as '%s' by\n    %s\n    (%ssystemd: %s.timer, or /etc/cron.d/%s%s), daily at %s." \
            "$BAHMNI_URL" "$BAHMNI_USER" "$FORM_IMPORT_RUNNER" \
            "$C_DIM" "$FORM_IMPORT_UNIT" "$FORM_IMPORT_UNIT" "$C_RESET" "$FORM_IMPORT_CRON"
   else
-    printf "is NOT being imported on a schedule: %s is not installed\n    on this host. Install it with ./import-forms.sh — it would then import\n    into %s as '%s', daily at %s." \
+    printf "are cloned but NOT imported, and nothing is scheduled to import\n    them: %s does not exist yet. The catch-up script\n    installs it and does the first import, once the EMR is answering —\n    into %s as '%s', daily at %s thereafter." \
            "$FORM_IMPORT_RUNNER" "$BAHMNI_URL" "$BAHMNI_USER" "$FORM_IMPORT_CRON"
   fi
 }
@@ -294,13 +298,17 @@ $(_next_steps_rule)
     $(_next_steps_forms_line)
     Only forms whose content changed are deployed, and a changed form goes out
     as a NEW version — the live one is never overwritten.
+    Set it up and import (do this once the EMR answers — 30+ min from now):
+         curl -fsSL ${RAW_BASE}/catch-up.sh | bash
+       (or, from the upgrade repo:  ./catch-up.sh)
+    Forms only, without the rest of the catch-up:
+         curl -fsSL ${RAW_BASE}/import-forms.sh | bash
+       (or, from the upgrade repo:  ./import-forms.sh)
+    Once installed —
     Import now:  sudo ${FORM_IMPORT_RUNNER}
     Log:         ${FORM_IMPORT_LOG}
     State:       ${FORM_IMPORT_STATE}
     Credentials: ${FORM_IMPORT_ENV} (mode 0600)
-    Re-install / re-schedule:
-         curl -fsSL ${RAW_BASE}/import-forms.sh | bash
-       (or, from the upgrade repo:  ./import-forms.sh)
 
   Database backups:
     The '${DB_NAME}' database in the ${DB_SERVICE} service
