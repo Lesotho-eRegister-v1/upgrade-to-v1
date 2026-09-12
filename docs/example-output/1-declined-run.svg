@@ -1,0 +1,312 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="964" height="1202" viewBox="0 0 964 1202" role="img" aria-labelledby="t" xml:space="preserve">
+<title id="t">First run — declined at the freeze step</title>
+<style>
+text{font-family:ui-monospace,"SF Mono",SFMono-Regular,Menlo,Consolas,"DejaVu Sans Mono","Liberation Mono",monospace;font-size:13px;fill:#d4d7dd;white-space:pre}
+.info{fill:#5c9dff}.warn{fill:#e8c46a}.err{fill:#ff6b6b}.ok{fill:#4fcf73}.hdr{fill:#3fc6d9}.dim{fill:#80868f}
+.notice{fill:#e8c46a;font-weight:700}.user{fill:#4fcf73;font-weight:700}.path{fill:#5c9dff;font-weight:700}
+.title{fill:#9aa0a8;font-size:12px;font-family:-apple-system,"Segoe UI",Ubuntu,sans-serif}
+</style>
+<rect width="964" height="1202" rx="10" fill="#16181d"/>
+<rect width="964" height="32" rx="10" fill="#262a31"/>
+<rect y="22" width="964" height="10" fill="#262a31"/>
+<circle cx="20" cy="16" r="6" fill="#ff5f57"/>
+<circle cx="40" cy="16" r="6" fill="#febc2e"/>
+<circle cx="60" cy="16" r="6" fill="#28c840"/>
+<text class="title" x="482.0" y="20" text-anchor="middle">First run — declined at the freeze step</text>
+<text x="18.0" y="63" textLength="881.4" lengthAdjust="spacing">curl -fsSL https://raw.githubusercontent.com/Lesotho-eRegister-v1/upgrade-to-v1/refs/heads/main/install.sh | bash</text>
+<text x="18.0" y="81" textLength="171.6" lengthAdjust="spacing">lib/ not found locally</text>
+<text x="197.4" y="81">—</text>
+<text x="213.0" y="81" textLength="156.0" lengthAdjust="spacing">fetching the modules</text>
+<text x="376.8" y="81">…</text>
+<text x="18.0" y="99" textLength="639.6" lengthAdjust="spacing">Modules obtained by cloning https://github.com/Lesotho-eRegister-v1/upgrade-to-v1.</text>
+<text x="33.6" y="135" class="hdr">┌</text>
+<text x="41.4" y="135" class="hdr">─</text>
+<text x="49.2" y="135" class="hdr">─</text>
+<text x="57.0" y="135" class="hdr">─</text>
+<text x="64.8" y="135" class="hdr">─</text>
+<text x="72.6" y="135" class="hdr">─</text>
+<text x="80.4" y="135" class="hdr">─</text>
+<text x="88.2" y="135" class="hdr">─</text>
+<text x="96.0" y="135" class="hdr">─</text>
+<text x="103.8" y="135" class="hdr">─</text>
+<text x="111.6" y="135" class="hdr">─</text>
+<text x="119.4" y="135" class="hdr">─</text>
+<text x="127.2" y="135" class="hdr">─</text>
+<text x="135.0" y="135" class="hdr">─</text>
+<text x="142.8" y="135" class="hdr">─</text>
+<text x="150.6" y="135" class="hdr">─</text>
+<text x="158.4" y="135" class="hdr">─</text>
+<text x="166.2" y="135" class="hdr">─</text>
+<text x="174.0" y="135" class="hdr">─</text>
+<text x="181.8" y="135" class="hdr">─</text>
+<text x="189.6" y="135" class="hdr">─</text>
+<text x="197.4" y="135" class="hdr">─</text>
+<text x="205.2" y="135" class="hdr">─</text>
+<text x="213.0" y="135" class="hdr">─</text>
+<text x="220.8" y="135" class="hdr">─</text>
+<text x="228.6" y="135" class="hdr">─</text>
+<text x="236.4" y="135" class="hdr">─</text>
+<text x="244.2" y="135" class="hdr">─</text>
+<text x="252.0" y="135" class="hdr">─</text>
+<text x="259.8" y="135" class="hdr">─</text>
+<text x="267.6" y="135" class="hdr">─</text>
+<text x="275.4" y="135" class="hdr">─</text>
+<text x="283.2" y="135" class="hdr">─</text>
+<text x="291.0" y="135" class="hdr">─</text>
+<text x="298.8" y="135" class="hdr">─</text>
+<text x="306.6" y="135" class="hdr">─</text>
+<text x="314.4" y="135" class="hdr">─</text>
+<text x="322.2" y="135" class="hdr">─</text>
+<text x="330.0" y="135" class="hdr">─</text>
+<text x="337.8" y="135" class="hdr">─</text>
+<text x="345.6" y="135" class="hdr">─</text>
+<text x="353.4" y="135" class="hdr">─</text>
+<text x="361.2" y="135" class="hdr">─</text>
+<text x="369.0" y="135" class="hdr">─</text>
+<text x="376.8" y="135" class="hdr">─</text>
+<text x="384.6" y="135" class="hdr">─</text>
+<text x="392.4" y="135" class="hdr">─</text>
+<text x="400.2" y="135" class="hdr">─</text>
+<text x="408.0" y="135" class="hdr">─</text>
+<text x="415.8" y="135" class="hdr">─</text>
+<text x="423.6" y="135" class="hdr">─</text>
+<text x="431.4" y="135" class="hdr">─</text>
+<text x="439.2" y="135" class="hdr">─</text>
+<text x="447.0" y="135" class="hdr">─</text>
+<text x="454.8" y="135" class="hdr">─</text>
+<text x="462.6" y="135" class="hdr">─</text>
+<text x="470.4" y="135" class="hdr">─</text>
+<text x="478.2" y="135" class="hdr">─</text>
+<text x="486.0" y="135" class="hdr">─</text>
+<text x="493.8" y="135" class="hdr">─</text>
+<text x="501.6" y="135" class="hdr">─</text>
+<text x="509.4" y="135" class="hdr">┐</text>
+<text x="33.6" y="153" class="hdr">│</text>
+<text x="509.4" y="153" class="hdr">│</text>
+<text x="33.6" y="171" class="hdr">│</text>
+<text x="80.4" y="171" class="hdr">█</text>
+<text x="88.2" y="171" class="hdr">█</text>
+<text x="96.0" y="171" class="hdr">█</text>
+<text x="119.4" y="171" class="hdr" textLength="132.6" lengthAdjust="spacing">eRegister Lesotho</text>
+<text x="259.8" y="171" class="hdr">—</text>
+<text x="275.4" y="171" class="hdr" textLength="101.4" lengthAdjust="spacing">Upgrade to v1</text>
+<text x="509.4" y="171" class="hdr">│</text>
+<text x="33.6" y="189" class="hdr">│</text>
+<text x="509.4" y="189" class="hdr">│</text>
+<text x="33.6" y="207" class="hdr">│</text>
+<text x="80.4" y="207" class="hdr">⏳</text>
+<text x="111.6" y="207" class="hdr" textLength="171.6" lengthAdjust="spacing">Initializing migration</text>
+<text x="283.2" y="207" class="hdr">…</text>
+<text x="291.0" y="207" class="hdr">…</text>
+<text x="298.8" y="207" class="hdr">…</text>
+<text x="306.6" y="207" class="hdr">…</text>
+<text x="509.4" y="207" class="hdr">│</text>
+<text x="33.6" y="225" class="hdr">│</text>
+<text x="80.4" y="225" class="hdr">🔍</text>
+<text x="111.6" y="225" class="hdr" textLength="171.6" lengthAdjust="spacing">Checking prerequisites</text>
+<text x="283.2" y="225" class="hdr">…</text>
+<text x="291.0" y="225" class="hdr">…</text>
+<text x="298.8" y="225" class="hdr">.</text>
+<text x="509.4" y="225" class="hdr">│</text>
+<text x="33.6" y="243" class="hdr">│</text>
+<text x="80.4" y="243" class="hdr">✨</text>
+<text x="111.6" y="243" class="hdr" textLength="117.0" lengthAdjust="spacing">Doing the magic</text>
+<text x="228.6" y="243" class="hdr">…</text>
+<text x="236.4" y="243" class="hdr">…</text>
+<text x="244.2" y="243" class="hdr">…</text>
+<text x="509.4" y="243" class="hdr">│</text>
+<text x="33.6" y="261" class="hdr">│</text>
+<text x="509.4" y="261" class="hdr">│</text>
+<text x="33.6" y="279" class="hdr">└</text>
+<text x="41.4" y="279" class="hdr">─</text>
+<text x="49.2" y="279" class="hdr">─</text>
+<text x="57.0" y="279" class="hdr">─</text>
+<text x="64.8" y="279" class="hdr">─</text>
+<text x="72.6" y="279" class="hdr">─</text>
+<text x="80.4" y="279" class="hdr">─</text>
+<text x="88.2" y="279" class="hdr">─</text>
+<text x="96.0" y="279" class="hdr">─</text>
+<text x="103.8" y="279" class="hdr">─</text>
+<text x="111.6" y="279" class="hdr">─</text>
+<text x="119.4" y="279" class="hdr">─</text>
+<text x="127.2" y="279" class="hdr">─</text>
+<text x="135.0" y="279" class="hdr">─</text>
+<text x="142.8" y="279" class="hdr">─</text>
+<text x="150.6" y="279" class="hdr">─</text>
+<text x="158.4" y="279" class="hdr">─</text>
+<text x="166.2" y="279" class="hdr">─</text>
+<text x="174.0" y="279" class="hdr">─</text>
+<text x="181.8" y="279" class="hdr">─</text>
+<text x="189.6" y="279" class="hdr">─</text>
+<text x="197.4" y="279" class="hdr">─</text>
+<text x="205.2" y="279" class="hdr">─</text>
+<text x="213.0" y="279" class="hdr">─</text>
+<text x="220.8" y="279" class="hdr">─</text>
+<text x="228.6" y="279" class="hdr">─</text>
+<text x="236.4" y="279" class="hdr">─</text>
+<text x="244.2" y="279" class="hdr">─</text>
+<text x="252.0" y="279" class="hdr">─</text>
+<text x="259.8" y="279" class="hdr">─</text>
+<text x="267.6" y="279" class="hdr">─</text>
+<text x="275.4" y="279" class="hdr">─</text>
+<text x="283.2" y="279" class="hdr">─</text>
+<text x="291.0" y="279" class="hdr">─</text>
+<text x="298.8" y="279" class="hdr">─</text>
+<text x="306.6" y="279" class="hdr">─</text>
+<text x="314.4" y="279" class="hdr">─</text>
+<text x="322.2" y="279" class="hdr">─</text>
+<text x="330.0" y="279" class="hdr">─</text>
+<text x="337.8" y="279" class="hdr">─</text>
+<text x="345.6" y="279" class="hdr">─</text>
+<text x="353.4" y="279" class="hdr">─</text>
+<text x="361.2" y="279" class="hdr">─</text>
+<text x="369.0" y="279" class="hdr">─</text>
+<text x="376.8" y="279" class="hdr">─</text>
+<text x="384.6" y="279" class="hdr">─</text>
+<text x="392.4" y="279" class="hdr">─</text>
+<text x="400.2" y="279" class="hdr">─</text>
+<text x="408.0" y="279" class="hdr">─</text>
+<text x="415.8" y="279" class="hdr">─</text>
+<text x="423.6" y="279" class="hdr">─</text>
+<text x="431.4" y="279" class="hdr">─</text>
+<text x="439.2" y="279" class="hdr">─</text>
+<text x="447.0" y="279" class="hdr">─</text>
+<text x="454.8" y="279" class="hdr">─</text>
+<text x="462.6" y="279" class="hdr">─</text>
+<text x="470.4" y="279" class="hdr">─</text>
+<text x="478.2" y="279" class="hdr">─</text>
+<text x="486.0" y="279" class="hdr">─</text>
+<text x="493.8" y="279" class="hdr">─</text>
+<text x="501.6" y="279" class="hdr">─</text>
+<text x="509.4" y="279" class="hdr">┘</text>
+<text x="18.0" y="315" class="info">[</text>
+<text x="25.8" y="315" class="info">ℹ</text>
+<text x="33.6" y="315" class="info">]</text>
+<text x="49.2" y="315" textLength="366.6" lengthAdjust="spacing">Elevation required for /var/lib; will use sudo.</text>
+<text x="18.0" y="351" class="hdr" textLength="23.4" lengthAdjust="spacing">==&gt;</text>
+<text x="49.2" y="351" textLength="171.6" lengthAdjust="spacing">Resolved configuration</text>
+<text x="33.6" y="369" class="dim" textLength="23.4" lengthAdjust="spacing">App</text>
+<text x="150.6" y="369" textLength="148.2" lengthAdjust="spacing">: eRegister Lesotho</text>
+<text x="33.6" y="387" class="dim" textLength="31.2" lengthAdjust="spacing">Time</text>
+<text x="150.6" y="387" textLength="218.4" lengthAdjust="spacing">: 2026-09-12 22:31:31 (SAST)</text>
+<text x="33.6" y="405" class="dim" textLength="85.8" lengthAdjust="spacing">Current ver</text>
+<text x="150.6" y="405" textLength="46.8" lengthAdjust="spacing">: none</text>
+<text x="33.6" y="423" class="dim" textLength="78.0" lengthAdjust="spacing">Target ver</text>
+<text x="150.6" y="423" textLength="31.2" lengthAdjust="spacing">: v1</text>
+<text x="33.6" y="441" class="dim" textLength="93.6" lengthAdjust="spacing">Ref override</text>
+<text x="150.6" y="441" textLength="54.6" lengthAdjust="spacing">: (none</text>
+<text x="213.0" y="441">—</text>
+<text x="228.6" y="441" textLength="265.2" lengthAdjust="spacing">using the per-repo defaults below)</text>
+<text x="33.6" y="459" class="dim" textLength="93.6" lengthAdjust="spacing">Default refs</text>
+<text x="150.6" y="459" textLength="436.8" lengthAdjust="spacing">: docker=Bokang-changes  config=Bokang-changes  092=main</text>
+<text x="166.2" y="477" textLength="382.2" lengthAdjust="spacing">modules=main  impl-interface=main  obs-forms=main</text>
+<text x="33.6" y="495" class="dim" textLength="70.2" lengthAdjust="spacing">OS / Arch</text>
+<text x="150.6" y="495" textLength="117.0" lengthAdjust="spacing">: linux / amd64</text>
+<text x="33.6" y="513" class="dim" textLength="85.8" lengthAdjust="spacing">Pkg manager</text>
+<text x="150.6" y="513" textLength="70.2" lengthAdjust="spacing">: apt-get</text>
+<text x="33.6" y="531" class="dim" textLength="93.6" lengthAdjust="spacing">Install base</text>
+<text x="150.6" y="531" textLength="78.0" lengthAdjust="spacing">: /var/lib</text>
+<text x="33.6" y="549" class="dim" textLength="46.8" lengthAdjust="spacing">v1 dir</text>
+<text x="150.6" y="549" textLength="101.4" lengthAdjust="spacing">: /var/lib/v1</text>
+<text x="33.6" y="567" class="dim" textLength="109.2" lengthAdjust="spacing">eRegister_HOME</text>
+<text x="150.6" y="567" textLength="101.4" lengthAdjust="spacing">: /var/lib/v1</text>
+<text x="33.6" y="585" class="dim" textLength="93.6" lengthAdjust="spacing">Concept dict</text>
+<text x="150.6" y="585" textLength="795.6" lengthAdjust="spacing">: /var/lib/v1/eregister_concepts_release_v1/omrs_concept_dictionary*.sql (newest) -&gt; openmrsdb:openmrs</text>
+<text x="33.6" y="603" class="dim" textLength="85.8" lengthAdjust="spacing">Concept job</text>
+<text x="150.6" y="603" textLength="764.4" lengthAdjust="spacing">: first run ~3h after install, then daily 30 4 * * * -&gt; /usr/local/bin/eregister-concept-import.sh</text>
+<text x="33.6" y="621" class="dim" textLength="85.8" lengthAdjust="spacing">Report defs</text>
+<text x="150.6" y="621" textLength="624.0" lengthAdjust="spacing">: /var/lib/v1/openmrs_reporting_release (cloned here; imported by ./catch-up.sh)</text>
+<text x="33.6" y="639" class="dim" textLength="109.2" lengthAdjust="spacing">Clinical forms</text>
+<text x="150.6" y="639" textLength="569.4" lengthAdjust="spacing">: /var/lib/v1/clinical-obs-forms (cloned here; imported by ./catch-up.sh)</text>
+<text x="33.6" y="657" class="dim" textLength="70.2" lengthAdjust="spacing">DB backup</text>
+<text x="150.6" y="657" textLength="577.2" lengthAdjust="spacing">: openmrsdb:openmrs -&gt; /var/lib/v1/db-backups (daily: 30 1 * * *, keep 14)</text>
+<text x="33.6" y="675" class="dim" textLength="70.2" lengthAdjust="spacing">Old stack</text>
+<text x="150.6" y="675" textLength="226.2" lengthAdjust="spacing">: /home/kgatman/bahmni_docker</text>
+<text x="33.6" y="693" class="dim" textLength="101.4" lengthAdjust="spacing">EMR container</text>
+<text x="150.6" y="693" textLength="226.2" lengthAdjust="spacing">: bahmni_docker-emr-service-1</text>
+<text x="33.6" y="711" class="dim" textLength="70.2" lengthAdjust="spacing">Privilege</text>
+<text x="150.6" y="711" textLength="46.8" lengthAdjust="spacing">: sudo</text>
+<text x="33.6" y="729" class="dim" textLength="117.0" lengthAdjust="spacing">Non-interactive</text>
+<text x="150.6" y="729" textLength="31.2" lengthAdjust="spacing">: no</text>
+<text x="18.0" y="747" class="warn">[</text>
+<text x="25.8" y="747" class="warn">⚠</text>
+<text x="33.6" y="747" class="warn">]</text>
+<text x="49.2" y="747" textLength="546.0" lengthAdjust="spacing">Cautious mode: you will be asked to confirm EVERY step before it runs.</text>
+<text x="18.0" y="765" class="warn">[</text>
+<text x="25.8" y="765" class="warn">⚠</text>
+<text x="33.6" y="765" class="warn">]</text>
+<text x="49.2" y="765" textLength="553.8" lengthAdjust="spacing">Answer 'n' at any prompt to stop safely (with rollback if the old stack</text>
+<text x="18.0" y="783" class="warn">[</text>
+<text x="25.8" y="783" class="warn">⚠</text>
+<text x="33.6" y="783" class="warn">]</text>
+<text x="49.2" y="783" textLength="530.4" lengthAdjust="spacing">has already been frozen). Anything that is neither a yes nor a no is</text>
+<text x="18.0" y="801" class="warn">[</text>
+<text x="25.8" y="801" class="warn">⚠</text>
+<text x="33.6" y="801" class="warn">]</text>
+<text x="49.2" y="801" textLength="569.4" lengthAdjust="spacing">treated as a slip: the prompt asks whether you meant to stop, and repeats</text>
+<text x="18.0" y="819" class="warn">[</text>
+<text x="25.8" y="819" class="warn">⚠</text>
+<text x="33.6" y="819" class="warn">]</text>
+<text x="49.2" y="819" textLength="460.2" lengthAdjust="spacing">itself if you did not. Use --yes to auto-confirm all steps.</text>
+<text x="18.0" y="837" class="warn" textLength="280.8" lengthAdjust="spacing">Begin the upgrade 0.92 -&gt; v1? [y/N]:</text>
+<text x="306.6" y="837">y</text>
+<text x="18.0" y="855" class="warn" textLength="631.8" lengthAdjust="spacing">Next step: Check for, and install if missing, required dependencies (git, docker,</text>
+<text x="657.6" y="855" class="warn">…</text>
+<text x="665.4" y="855" class="warn">)</text>
+<text x="681.0" y="855" class="warn">—</text>
+<text x="696.6" y="855" class="warn" textLength="117.0" lengthAdjust="spacing">proceed? [y/N]:</text>
+<text x="821.4" y="855">y</text>
+<text x="18.0" y="873" class="ok">[</text>
+<text x="25.8" y="873" class="ok">✔</text>
+<text x="33.6" y="873" class="ok">]</text>
+<text x="49.2" y="873" textLength="195.0" lengthAdjust="spacing">All dependencies present.</text>
+<text x="18.0" y="891" class="warn" textLength="546.0" lengthAdjust="spacing">Next step: Create the temp workspace and the v1 folders under /var/lib</text>
+<text x="571.8" y="891" class="warn">—</text>
+<text x="587.4" y="891" class="warn" textLength="117.0" lengthAdjust="spacing">proceed? [y/N]:</text>
+<text x="712.2" y="891">y</text>
+<text x="18.0" y="909" class="info">[</text>
+<text x="25.8" y="909" class="info">ℹ</text>
+<text x="33.6" y="909" class="info">]</text>
+<text x="49.2" y="909" textLength="288.6" lengthAdjust="spacing">Working dir: /tmp/eregister-v1.69PQ5v</text>
+<text x="18.0" y="945" class="hdr" textLength="23.4" lengthAdjust="spacing">==&gt;</text>
+<text x="49.2" y="945" textLength="163.8" lengthAdjust="spacing">Preparing directories</text>
+<text x="18.0" y="963" class="info">[</text>
+<text x="25.8" y="963" class="info">ℹ</text>
+<text x="33.6" y="963" class="info">]</text>
+<text x="49.2" y="963" textLength="288.6" lengthAdjust="spacing">v1 folder already exists: /var/lib/v1</text>
+<text x="18.0" y="981" class="info">[</text>
+<text x="25.8" y="981" class="info">ℹ</text>
+<text x="33.6" y="981" class="info">]</text>
+<text x="49.2" y="981" textLength="483.6" lengthAdjust="spacing">bahmni-backup folder already exists: /var/lib/v1/bahmni-backup</text>
+<text x="18.0" y="1017" class="hdr" textLength="23.4" lengthAdjust="spacing">==&gt;</text>
+<text x="49.2" y="1017" textLength="46.8" lengthAdjust="spacing">Backup</text>
+<text x="18.0" y="1035" class="ok">[</text>
+<text x="25.8" y="1035" class="ok">✔</text>
+<text x="33.6" y="1035" class="ok">]</text>
+<text x="49.2" y="1035" textLength="436.8" lengthAdjust="spacing">Reusing the backup already in /var/lib/v1/bahmni-backup:</text>
+<text x="18.0" y="1053" class="ok">[</text>
+<text x="25.8" y="1053" class="ok">✔</text>
+<text x="33.6" y="1053" class="ok">]</text>
+<text x="64.8" y="1053" textLength="413.4" lengthAdjust="spacing">/var/lib/v1/bahmni-backup/openmrsdb_backup.sql (299M)</text>
+<text x="18.0" y="1071" class="info">[</text>
+<text x="25.8" y="1071" class="info">ℹ</text>
+<text x="33.6" y="1071" class="info">]</text>
+<text x="49.2" y="1071" textLength="530.4" lengthAdjust="spacing">The restore below loads THIS file. To retake it instead, re-run with</text>
+<text x="18.0" y="1089" class="info">[</text>
+<text x="25.8" y="1089" class="info">ℹ</text>
+<text x="33.6" y="1089" class="info">]</text>
+<text x="49.2" y="1089" textLength="374.4" lengthAdjust="spacing">--force while the 0.92 EMR container is running.</text>
+<text x="18.0" y="1125" class="hdr" textLength="23.4" lengthAdjust="spacing">==&gt;</text>
+<text x="49.2" y="1125" textLength="70.2" lengthAdjust="spacing">Migration</text>
+<text x="18.0" y="1143" class="warn" textLength="702.0" lengthAdjust="spacing">Next step: Freeze (stop, not remove) the running 0.92 stack at /home/kgatman/bahmni_docker</text>
+<text x="727.8" y="1143" class="warn">—</text>
+<text x="743.4" y="1143" class="warn" textLength="117.0" lengthAdjust="spacing">proceed? [y/N]:</text>
+<text x="18.0" y="1161" class="warn">[</text>
+<text x="25.8" y="1161" class="warn">⚠</text>
+<text x="33.6" y="1161" class="warn">]</text>
+<text x="49.2" y="1161" textLength="795.6" lengthAdjust="spacing">Step declined by user: Freeze (stop, not remove) the running 0.92 stack at /home/kgatman/bahmni_docker</text>
+<text x="18.0" y="1179" class="err">[</text>
+<text x="25.8" y="1179" class="err">✘</text>
+<text x="33.6" y="1179" class="err">]</text>
+<text x="49.2" y="1179" textLength="522.6" lengthAdjust="spacing">Upgrade aborted by user before completion. No further changes made.</text>
+</svg>

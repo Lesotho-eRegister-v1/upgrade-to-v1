@@ -1,8 +1,14 @@
 # Example output — upgrade to v1
 
-Terminal output from running `install.sh` on a host with an existing 0.92 backup.
+Terminal output from running `install.sh` on a host with an existing 0.92 backup,
+in the colors the scripts print. Expand **Plain text** under a session to copy from it.
 
 ## 1. First run — declined at the freeze step
+
+![Terminal output: First run — declined at the freeze step](docs/example-output/1-declined-run.svg)
+
+<details>
+<summary>Plain text</summary>
 
 ```text
 curl -fsSL https://raw.githubusercontent.com/Lesotho-eRegister-v1/upgrade-to-v1/refs/heads/main/install.sh | bash
@@ -70,7 +76,14 @@ Next step: Freeze (stop, not remove) the running 0.92 stack at /home/kgatman/bah
 [✘] Upgrade aborted by user before completion. No further changes made.
 ```
 
+</details>
+
 ## 2. Checking the host between runs
+
+![Terminal output: Checking the host between runs](docs/example-output/2-host-check.svg)
+
+<details>
+<summary>Plain text</summary>
 
 ```text
 kgatman@inyenius-linuxius-maxiamus:~$ ls
@@ -85,7 +98,14 @@ kgatman@inyenius-linuxius-maxiamus:~$ docker ps
 CONTAINER ID   IMAGE     COMMAND   CREATED   STATUS    PORTS     NAMES
 ```
 
+</details>
+
 ## 3. Second run — full upgrade to v1
+
+![Terminal output: Second run — full upgrade to v1](docs/example-output/3-full-upgrade.svg)
+
+<details>
+<summary>Plain text</summary>
 
 ```text
 kgatman@inyenius-linuxius-maxiamus:~$ curl -fsSL https://raw.githubusercontent.com/Lesotho-eRegister-v1/upgrade-to-v1/refs/heads/main/install.sh | bash
@@ -507,3 +527,5 @@ Created symlink '/etc/systemd/system/timers.target.wants/eregister-autopull.time
     depending on the server hardware hosting eRegister.
 [✔] Done.
 ```
+
+</details>
