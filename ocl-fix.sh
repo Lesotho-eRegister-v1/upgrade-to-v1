@@ -12,7 +12,7 @@
 #
 # USAGE
 #   ./ocl-fix.sh [--yes] [--install-dir DIR] [--no-color] [--help]
-#   curl -fsSL <raw>/ocl-fix.sh | bash
+#   curl -fsSL --retry 8 --retry-max-time 180 <raw>/ocl-fix.sh | bash
 #
 # ENV
 #   EREGISTER_INSTALL_BASE  install base (default /var/lib) -> <base>/v1/...
@@ -45,7 +45,9 @@ bootstrap_modules() {
   for m in "${OCLFIX_MODULES[@]}"; do
     mkdir -p "${tmp}/$(dirname "$m")"
     url="${EREGISTER_RAW_BASE}/lib/${m}"
-    if ! curl -fsSL "$url" -o "${tmp}/${m}"; then
+    # --retry rides out the raw host's transient 429/5xx (usually a 503).
+    if ! curl -fsSL --retry 6 --retry-max-time 120 \
+              --connect-timeout 15 "$url" -o "${tmp}/${m}"; then
       printf 'FATAL: could not download module: %s\n' "$url" >&2
       rm -rf "$tmp"; return 1
     fi

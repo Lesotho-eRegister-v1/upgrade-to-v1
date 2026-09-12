@@ -1,7 +1,7 @@
 To run this script, just copy and paste this line below in your terminal:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Lesotho-eRegister-v1/upgrade-to-v1/refs/heads/main/install.sh | bash
+curl -fsSL --retry 8 --retry-max-time 180 https://raw.githubusercontent.com/Lesotho-eRegister-v1/upgrade-to-v1/refs/heads/main/install.sh | bash
 ```
 
 ## Already on v1? Run the catch-up script
@@ -18,7 +18,7 @@ the EMR is still 30+ minutes from answering when the upgrade ends. So run this
 once the stack is up — on a site installed today just as much as on an old one:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Lesotho-eRegister-v1/upgrade-to-v1/refs/heads/main/catch-up.sh | bash
+curl -fsSL --retry 8 --retry-max-time 180 https://raw.githubusercontent.com/Lesotho-eRegister-v1/upgrade-to-v1/refs/heads/main/catch-up.sh | bash
 ```
 
 > [!NOTE]
@@ -35,7 +35,7 @@ It updates itself first (`git pull`, then re-runs from the fresh copy), so the
 line above always applies the newest checks. Non-interactive form:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Lesotho-eRegister-v1/upgrade-to-v1/refs/heads/main/catch-up.sh | sudo EREGISTER_BAHMNI_PASS='<superman password>' bash -s -- --yes
+curl -fsSL --retry 8 --retry-max-time 180 https://raw.githubusercontent.com/Lesotho-eRegister-v1/upgrade-to-v1/refs/heads/main/catch-up.sh | sudo EREGISTER_BAHMNI_PASS='<superman password>' bash -s -- --yes
 ```
 
 Useful flags: `--no-recreate` (skip the EMR reload — then nothing touches a
@@ -52,7 +52,7 @@ as a monitoring check. Full detail: [Catching an early site up](#catching-an-ear
 An example of how to use flags below:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Lesotho-eRegister-v1/upgrade-to-v1/refs/heads/main/install.sh | bash -s -- --force --yes
+curl -fsSL --retry 8 --retry-max-time 180 https://raw.githubusercontent.com/Lesotho-eRegister-v1/upgrade-to-v1/refs/heads/main/install.sh | bash -s -- --force --yes
 ```
 
 ### If the installer stopped part-way through
@@ -92,7 +92,7 @@ What to do next:
 4. After the instance is FULLY up and the OCL import has finished (~30+ min), apply the OCL concept-name fix (run once):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Lesotho-eRegister-v1/upgrade-to-v1/refs/heads/main/ocl-fix.sh | bash
+curl -fsSL --retry 8 --retry-max-time 180 https://raw.githubusercontent.com/Lesotho-eRegister-v1/upgrade-to-v1/refs/heads/main/ocl-fix.sh | bash
 ```
 (or, from the upgrade repo:  `bash ./ocl-fix.sh`)
 
@@ -178,7 +178,7 @@ back the same way to undo the import.
 Re-run it on its own at any time:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Lesotho-eRegister-v1/upgrade-to-v1/refs/heads/main/import-concepts.sh | bash
+curl -fsSL --retry 8 --retry-max-time 180 https://raw.githubusercontent.com/Lesotho-eRegister-v1/upgrade-to-v1/refs/heads/main/import-concepts.sh | bash
 ```
 (or, from the upgrade repo: `bash ./import-concepts.sh`)
 
@@ -374,7 +374,7 @@ Set it all up — or re-install and re-schedule it — for forms alone, without 
 rest of the catch-up:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Lesotho-eRegister-v1/upgrade-to-v1/refs/heads/main/import-forms.sh | bash
+curl -fsSL --retry 8 --retry-max-time 180 https://raw.githubusercontent.com/Lesotho-eRegister-v1/upgrade-to-v1/refs/heads/main/import-forms.sh | bash
 ```
 (or, from the upgrade repo: `bash ./import-forms.sh`)
 
@@ -520,7 +520,7 @@ freezes the old stack, restores a backup and restarts everything. Catch-up does
 the opposite: it checks what is already there, fixes only the gaps, and reports.
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Lesotho-eRegister-v1/upgrade-to-v1/refs/heads/main/catch-up.sh | bash
+curl -fsSL --retry 8 --retry-max-time 180 https://raw.githubusercontent.com/Lesotho-eRegister-v1/upgrade-to-v1/refs/heads/main/catch-up.sh | bash
 ```
 (or, from the upgrade repo: `bash ./catch-up.sh`)
 
@@ -664,6 +664,53 @@ for `--yes` if the credentials file is missing), `EREGISTER_UPGRADE_REPO`,
 > The monitoring/cron use above should carry `--no-recreate`. Left on, every
 > scheduled run would recreate the EMR and take it down for half an hour.
 
+# Troubleshooting: `curl: (22) The requested URL returned error: 503`
+
+That is **raw.githubusercontent.com**, not your server and not the upgrade. The
+raw host throttles and has short outages; when it answers `503` (or `429`), curl
+`-f` gives up with exit `22` and the one-liner never reaches `bash`. Nothing has
+been changed on the machine at that point — the fetch failed before any work
+started, so it is always safe to just run the command again.
+
+Measured from here on 2026-09-12: three of five requests to the same raw URL
+returned `503`, the rest `200`, all served by the Cape Town edge
+(`x-github-edge-region: southafricanorth`). So it comes and goes within seconds
+— which is exactly what retrying fixes.
+
+Every command in this readme now carries retry flags, and every download the
+scripts make themselves retries the same way, so a passing 503 is ridden out
+instead of ending the run. If you copied a one-liner from somewhere older, add
+the flags:
+
+```bash
+curl -fsSL --retry 8 --retry-max-time 180 <url> | bash
+```
+
+`--retry-delay` is deliberately **not** set: without it curl backs off
+exponentially (1s, 2s, 4s, 8s …), which spreads the attempts across a minutes-long
+wobble instead of hammering the same dead edge for ten seconds.
+
+Once a script is running it is largely past this: `install.sh` and the other
+entry points fetch `lib/` by shallow-cloning the repo **first** (github.com, not
+the raw host) and only fall back to per-file raw downloads. The fragile moment is
+the outer `curl … | bash` that fetches the entry script itself.
+
+Two things to know when reading the output:
+
+- A `curl: (22) … 503` line **followed by the script running** is a retry that
+  succeeded. curl prints the error for each attempt; the run is fine.
+- `503` repeated until the command dies means the raw host is down for longer
+  than the retries cover. Wait a few minutes, or bypass the raw host entirely by
+  running from a checkout, which fetches over git instead:
+
+  ```bash
+  git clone https://github.com/Lesotho-eRegister-v1/upgrade-to-v1
+  cd upgrade-to-v1 && ./install.sh
+  ```
+
+Do not confuse this with a `404`, below — that one is a missing file and will
+never fix itself by retrying.
+
 # Troubleshooting: `curl: (56) The requested URL returned error: 404`
 
 That is the one-liners failing to fetch their own modules. It is a **404 on a
@@ -699,7 +746,9 @@ file under `lib/` or `bin/`:
 
 It probes every module each entry script lists, plus `bin/bahmni_form_import.sh`,
 and flags anything uncommitted or unpushed in your checkout. Exit `0` means the
-one-liners work right now.
+one-liners work right now; exit `2` means the check could not tell because the
+raw host answered `503`/`429` (see the 503 section above) — nothing is missing,
+re-run it in a few minutes.
 
 Workarounds while a fix is being pushed:
 

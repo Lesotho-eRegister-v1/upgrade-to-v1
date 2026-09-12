@@ -53,7 +53,7 @@
 # there are no gaps, so it doubles as a monitoring check.
 #
 # USAGE
-#   curl -fsSL <raw>/catch-up.sh | bash
+#   curl -fsSL --retry 8 --retry-max-time 180 <raw>/catch-up.sh | bash
 #   ./catch-up.sh [--yes] [--no-stack] [--no-forms] [--no-concepts]
 #                 [--no-reporting] [--no-db-backup] [--no-recreate]
 #                 [--force-repos] [--install-dir DIR] [--no-color] [--help]
@@ -373,7 +373,11 @@ _boot_try_raw() {
       url="${base}/lib/${m}"
       mkdir -p "${dest}/$(dirname "$m")"
       # No -f: it hides the status behind curl's own exit code. Check it here.
-      code="$(curl -sSL -o "${dest}/${m}" -w '%{http_code}' "$url" 2>/dev/null)" || code="000"
+      # --retry covers the raw host's transient 429/5xx (a 503 from the CDN is
+      # the single most common cause of a failed run); the code is still checked.
+      code="$(curl -sSL --retry 6 --retry-max-time 120 \
+                    --connect-timeout 15 \
+                    -o "${dest}/${m}" -w '%{http_code}' "$url" 2>/dev/null)" || code="000"
       if [ "$code" != "200" ]; then
         rm -f "${dest}/${m}"
         _boot_tried "${url} -> HTTP ${code}"
@@ -395,6 +399,11 @@ _boot_fail() {
   _boot_log "FATAL: could not obtain the eRegister modules (lib/)."
   _boot_log "Tried:"
   while IFS= read -r t; do _boot_log "  • ${t}"; done < "${_BOOT_TRIED_FILE:-/dev/null}"
+  _boot_log ""
+  _boot_log "An HTTP 503 or 429 here is the raw CDN throttling or briefly"
+  _boot_log "unavailable — it is not your setup. Every download above already"
+  _boot_log "retries with backoff; just run the same command again in a minute, or"
+  _boot_log "use the checkout below, which fetches over git instead."
   _boot_log ""
   _boot_log "An HTTP 404 here almost always means one of:"
   _boot_log "  • the file is not pushed to that branch yet — the script you are running"

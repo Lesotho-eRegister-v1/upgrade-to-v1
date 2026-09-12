@@ -271,7 +271,7 @@ $(_next_steps_rule)
          ${dc} up -d
     4. After the instance is FULLY up and the OCL import has finished
        (~30+ min), apply the OCL concept-name fix (run once):
-         curl -fsSL ${RAW_BASE}/ocl-fix.sh | bash
+         curl -fsSL --retry 8 --retry-max-time 180 ${RAW_BASE}/ocl-fix.sh | bash
        (or, from the upgrade repo:  ./ocl-fix.sh)
     5. Once verified, the old install in ${OLD_DOCKER_DIR} can be archived.
 
@@ -280,7 +280,7 @@ $(_next_steps_rule)
     $(_next_steps_concepts_line)
     $(_next_steps_concepts_schedule_line)
     Import by hand at any time:
-         curl -fsSL ${RAW_BASE}/import-concepts.sh | bash
+         curl -fsSL --retry 8 --retry-max-time 180 ${RAW_BASE}/import-concepts.sh | bash
        (or, from the upgrade repo:  ./import-concepts.sh)
     NOTE: OpenMRS caches concepts — the EMR must restart before a newly
     imported dictionary is visible. The job logs this; it does not restart it.
@@ -290,7 +290,7 @@ $(_next_steps_rule)
     Cloned, not imported: the database is minutes old at this point. The
     catch-up script loads them into '${DB_NAME}' (one table, serialized_object,
     dumped to ${BACKUP_DIR} first) and skips the work when they are already in:
-         curl -fsSL ${RAW_BASE}/catch-up.sh | bash
+         curl -fsSL --retry 8 --retry-max-time 180 ${RAW_BASE}/catch-up.sh | bash
        (or, from the upgrade repo:  ./catch-up.sh)
 
   Clinical observation forms:
@@ -299,10 +299,10 @@ $(_next_steps_rule)
     Only forms whose content changed are deployed, and a changed form goes out
     as a NEW version — the live one is never overwritten.
     Set it up and import (do this once the EMR answers — 30+ min from now):
-         curl -fsSL ${RAW_BASE}/catch-up.sh | bash
+         curl -fsSL --retry 8 --retry-max-time 180 ${RAW_BASE}/catch-up.sh | bash
        (or, from the upgrade repo:  ./catch-up.sh)
     Forms only, without the rest of the catch-up:
-         curl -fsSL ${RAW_BASE}/import-forms.sh | bash
+         curl -fsSL --retry 8 --retry-max-time 180 ${RAW_BASE}/import-forms.sh | bash
        (or, from the upgrade repo:  ./import-forms.sh)
     Once installed —
     Import now:  sudo ${FORM_IMPORT_RUNNER}
@@ -337,7 +337,7 @@ ${C_WARN}    ⚠ These dumps are on the SAME disk as the database. They undo a b
   re-run, use the catch-up script instead — it reconciles the repos, helpers and
   scheduled jobs in place, reports on service health, and reloads the EMR
   service at the end (--no-recreate to leave even that alone):
-       curl -fsSL ${RAW_BASE}/catch-up.sh | bash
+       curl -fsSL --retry 8 --retry-max-time 180 ${RAW_BASE}/catch-up.sh | bash
      (or, from the upgrade repo:  ./catch-up.sh)
 
 ${C_ERR}  ⚠ Please wait ~30+ minutes before using eRegister. The v1 services

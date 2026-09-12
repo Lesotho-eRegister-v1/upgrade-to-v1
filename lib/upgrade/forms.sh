@@ -71,10 +71,13 @@ _forms_install_importer() {
   url="${RAW_BASE}/bin/bahmni_form_import.sh"
   info "bin/bahmni_form_import.sh not found locally — downloading it from ${RAW_BASE} …"
   tmp="$(mktemp)"
-  code="$(curl -sSL -o "$tmp" -w '%{http_code}' "$url" 2>/dev/null)" || code="000"
+  code="$(curl -sSL --retry 6 --retry-max-time 120 \
+                --connect-timeout 15 \
+                -o "$tmp" -w '%{http_code}' "$url" 2>/dev/null)" || code="000"
   if [ "$code" != "200" ] || [ ! -s "$tmp" ]; then
     rm -f "$tmp"
     error "Could not download the form importer: HTTP ${code} for ${url}"
+    error "A 503 or 429 is the raw CDN throttling — re-run this step in a minute."
     error "A 404 means bin/bahmni_form_import.sh is not on that branch yet (push it),"
     error "or the branch/repo in EREGISTER_RAW_BASE is wrong or private."
     error "Workaround: clone the repo and re-run from the checkout, so bin/ is local."
