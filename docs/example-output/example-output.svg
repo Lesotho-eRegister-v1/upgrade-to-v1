@@ -1,5 +1,5 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="964" height="1202" viewBox="0 0 964 1202" role="img" aria-labelledby="t" xml:space="preserve">
-<title id="t">First run — declined at the freeze step</title>
+<title id="t">Example Output</title>
 <style>
 text{font-family:ui-monospace,"SF Mono",SFMono-Regular,Menlo,Consolas,"DejaVu Sans Mono","Liberation Mono",monospace;font-size:13px;fill:#d4d7dd;white-space:pre}
 .info{fill:#5c9dff}.warn{fill:#e8c46a}.err{fill:#ff6b6b}.ok{fill:#4fcf73}.hdr{fill:#3fc6d9}.dim{fill:#80868f}
@@ -12,7 +12,7 @@ text{font-family:ui-monospace,"SF Mono",SFMono-Regular,Menlo,Consolas,"DejaVu Sa
 <circle cx="20" cy="16" r="6" fill="#ff5f57"/>
 <circle cx="40" cy="16" r="6" fill="#febc2e"/>
 <circle cx="60" cy="16" r="6" fill="#28c840"/>
-<text class="title" x="482.0" y="20" text-anchor="middle">First run — declined at the freeze step</text>
+<text class="title" x="482.0" y="20" text-anchor="middle">Example Output</text>
 <text x="18.0" y="63" textLength="881.4" lengthAdjust="spacing">curl -fsSL https://raw.githubusercontent.com/Lesotho-eRegister-v1/upgrade-to-v1/refs/heads/main/install.sh | bash</text>
 <text x="18.0" y="81" textLength="171.6" lengthAdjust="spacing">lib/ not found locally</text>
 <text x="197.4" y="81">—</text>
