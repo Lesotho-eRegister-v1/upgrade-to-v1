@@ -1,3 +1,10 @@
+# Example output — upgrade to v1
+
+Terminal output from running `install.sh` on a host with an existing 0.92 backup.
+
+## 1. First run — declined at the freeze step
+
+```text
 curl -fsSL https://raw.githubusercontent.com/Lesotho-eRegister-v1/upgrade-to-v1/refs/heads/main/install.sh | bash
 lib/ not found locally — fetching the modules …
 Modules obtained by cloning https://github.com/Lesotho-eRegister-v1/upgrade-to-v1.
@@ -61,6 +68,11 @@ Next step: Create the temp workspace and the v1 folders under /var/lib — proce
 Next step: Freeze (stop, not remove) the running 0.92 stack at /home/kgatman/bahmni_docker — proceed? [y/N]:
 [⚠] Step declined by user: Freeze (stop, not remove) the running 0.92 stack at /home/kgatman/bahmni_docker
 [✘] Upgrade aborted by user before completion. No further changes made.
+```
+
+## 2. Checking the host between runs
+
+```text
 kgatman@inyenius-linuxius-maxiamus:~$ ls
  Botha_Bothe_Hosp_04_07_2025.sql        Public                                 Videos                    dhis2-core           node_modules           snap
  Desktop                                PycharmProjects                        'VirtualBox VMs'          dhis2-server-tools   oasistv                ubuntu-20.04.6-desktop-amd64.iso
@@ -71,6 +83,11 @@ kgatman@inyenius-linuxius-maxiamus:~$ ls
  Pictures                               Untitled.blend                         composelogs.txt           make.log             projects
 kgatman@inyenius-linuxius-maxiamus:~$ docker ps
 CONTAINER ID   IMAGE     COMMAND   CREATED   STATUS    PORTS     NAMES
+```
+
+## 3. Second run — full upgrade to v1
+
+```text
 kgatman@inyenius-linuxius-maxiamus:~$ curl -fsSL https://raw.githubusercontent.com/Lesotho-eRegister-v1/upgrade-to-v1/refs/heads/main/install.sh | bash
 lib/ not found locally — fetching the modules …
 Modules obtained by cloning https://github.com/Lesotho-eRegister-v1/upgrade-to-v1.
@@ -489,3 +506,4 @@ Created symlink '/etc/systemd/system/timers.target.wants/eregister-autopull.time
     need time to fully start up, and this can take considerably longer
     depending on the server hardware hosting eRegister.
 [✔] Done.
+```
