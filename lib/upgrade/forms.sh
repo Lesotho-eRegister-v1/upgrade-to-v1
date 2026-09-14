@@ -128,9 +128,137 @@ _forms_prompt_credentials() {
 }
 
 # -----------------------------------------------------------------------------
+# _forms_check_credentials <password> — ask the EMR whether BAHMNI_USER and this
+# password log in.  0 = accepted, 1 = rejected, 2 = could not tell.
+#
+# "Could not tell" covers everything short of a real answer: the EMR still
+# booting (it needs 30+ minutes), a proxy error page, curl failing outright. A
+# password must never be thrown away on one of those — only an explicit
+# authenticated:false, which OpenMRS sends with HTTP 200, counts as rejected.
+#
+# The credentials go to curl on stdin (-K -) rather than as -u, so the password
+# never shows up in `ps` for the other users on the host.
+# -----------------------------------------------------------------------------
+_forms_check_credentials() {
+  local cred="${BAHMNI_USER}:$1" out code body insecure=()
+  [ "$FORM_IMPORT_INSECURE" = "1" ] && insecure=(-k)
+  # curl config syntax: inside double quotes, \ and " must be escaped.
+  cred="${cred//\\/\\\\}"; cred="${cred//\"/\\\"}"
+  out="$(printf 'user = "%s"\n' "$cred" |
+         curl -sS ${insecure[@]+"${insecure[@]}"} --connect-timeout 10 --max-time 60 \
+              -K - -w '\n%{http_code}' "${BAHMNI_URL%/}/openmrs/ws/rest/v1/session" 2>/dev/null)" \
+    || return 2
+  code="${out##*$'\n'}"; body="${out%$'\n'*}"
+  [ "$code" = "200" ] || return 2
+  # Matched with a regex, not jq: jq may not be installed yet at this point.
+  [[ "$body" =~ \"authenticated\"[[:space:]]*:[[:space:]]*(true|false) ]] || return 2
+  [ "${BASH_REMATCH[1]}" = "true" ] && return 0
+  return 1
+}
+
+# -----------------------------------------------------------------------------
+# _forms_ensure_credentials — make FORM_IMPORT_ENV hold a password the EMR
+# actually accepts, prompting for a new one when it does not.
+#
+#   0 = the env file is usable and was left untouched
+#   3 = the env file was written (it was missing, or its password was rejected)
+#   1 = no usable password — the scheduled import will fail
+#
+# FORMS_CRED_NOTE is set to a one-line description for the caller's report.
+#
+# Candidates, in order: EREGISTER_BAHMNI_PASS, then the stored password, then a
+# prompt. A rejected candidate falls through to the next one; the prompt is
+# retried a few times, but not endlessly — OpenMRS locks an account out after
+# repeated failures. When the EMR is not answering nothing can be verified, so
+# a stored file is kept as it is and the prompt is not re-asked.
+# -----------------------------------------------------------------------------
+_forms_ensure_credentials() {
+  local had_env=0 stored_url="" stored_user="" stored_pass="" rc attempt
+  FORMS_CRED_NOTE=""
+
+  if as_root test -s "$FORM_IMPORT_ENV"; then
+    had_env=1
+    # Read the values the way the runner does — by sourcing the file — so a
+    # password mangled by an older unquoted env file is tested as mangled.
+    { IFS= read -r -d '' stored_url; IFS= read -r -d '' stored_user; IFS= read -r -d '' stored_pass; } < <(
+      as_root bash -c 'set -a; . "$1" >/dev/null 2>&1
+                       printf "%s\0%s\0%s\0" "${BAHMNI_URL:-}" "${BAHMNI_USER:-}" "${BAHMNI_PASS:-}"' \
+        _ "$FORM_IMPORT_ENV" 2>/dev/null) || true
+    # Test against the endpoint and account the daily job really uses.
+    [ -n "$stored_url" ]  && BAHMNI_URL="$stored_url"
+    [ -n "$stored_user" ] && BAHMNI_USER="$stored_user"
+  fi
+
+  # 1. A password handed in through the environment.
+  if [ -n "${BAHMNI_PASS:-}" ]; then
+    rc=0; _forms_check_credentials "$BAHMNI_PASS" || rc=$?
+    if [ "$rc" = "0" ] && [ "$had_env" = "1" ] && [ "$BAHMNI_PASS" = "$stored_pass" ]; then
+      FORMS_CRED_NOTE="present, password accepted by the EMR"
+      return 0
+    elif [ "$rc" = "0" ]; then
+      _forms_write_env || return 1
+      FORMS_CRED_NOTE="written for ${BAHMNI_USER}@${BAHMNI_URL} (password from EREGISTER_BAHMNI_PASS, accepted by the EMR)"
+      return 3
+    elif [ "$rc" = "1" ]; then
+      warn "The EMR rejected the password in EREGISTER_BAHMNI_PASS for '${BAHMNI_USER}' at ${BAHMNI_URL}."
+      BAHMNI_PASS=""
+    elif [ "$had_env" = "1" ]; then
+      FORMS_CRED_NOTE="present, left as-is (not verified — the EMR is not answering yet)"
+      return 0
+    else
+      _forms_write_env || return 1
+      FORMS_CRED_NOTE="written for ${BAHMNI_USER}@${BAHMNI_URL} (not verified — the EMR is not answering yet)"
+      return 3
+    fi
+  fi
+
+  # 2. The password already stored for the daily job.
+  if [ "$had_env" = "1" ]; then
+    rc=0; _forms_check_credentials "$stored_pass" || rc=$?
+    case "$rc" in
+      0) FORMS_CRED_NOTE="present, password accepted by the EMR"; return 0 ;;
+      2) FORMS_CRED_NOTE="present, left as-is (not verified — the EMR is not answering yet)"; return 0 ;;
+    esac
+    warn "The EMR rejected the password stored in ${FORM_IMPORT_ENV} for '${BAHMNI_USER}' at ${BAHMNI_URL}."
+    warn "The daily form import cannot log in until it is replaced."
+  fi
+
+  # 3. Ask. _forms_prompt_credentials refuses (returns 1) under --yes or with no TTY.
+  for attempt in 1 2 3; do
+    _forms_prompt_credentials || break
+    rc=0; _forms_check_credentials "$BAHMNI_PASS" || rc=$?
+    [ "$rc" = "1" ] || break
+    warn "The EMR rejected that password for '${BAHMNI_USER}' (attempt ${attempt} of 3)."
+    BAHMNI_PASS=""
+  done
+
+  if [ -z "${BAHMNI_PASS:-}" ]; then
+    if [ "$had_env" = "1" ]; then
+      FORMS_CRED_NOTE="stored password rejected by the EMR and no working one given — the daily form import will fail"
+    else
+      FORMS_CRED_NOTE="missing and no password given — the daily form import cannot run"
+    fi
+    return 1
+  fi
+
+  _forms_write_env || return 1
+  if [ "$had_env" = "1" ]; then
+    FORMS_CRED_NOTE="stored password was rejected by the EMR — replaced"
+  else
+    FORMS_CRED_NOTE="was missing — written for ${BAHMNI_USER}@${BAHMNI_URL}"
+  fi
+  [ "$rc" = "2" ] && FORMS_CRED_NOTE="${FORMS_CRED_NOTE} (not verified — the EMR is not answering yet)"
+  return 3
+}
+
+# -----------------------------------------------------------------------------
 # _forms_write_env — credentials + settings for the unattended runs.
 # 0600 and root-owned: it holds a password, and both the timer and the cron
 # entry run as root.
+#
+# Values are written with %q because the runner SOURCES this file: an unquoted
+# password containing $ # ; & quotes or spaces would reach curl altered, and the
+# EMR would answer authenticated:false to a password that looks right on disk.
 # -----------------------------------------------------------------------------
 _forms_write_env() {
   local tmp
@@ -139,13 +267,14 @@ _forms_write_env() {
   {
     printf '%s\n' "# eRegister v1 — settings for the scheduled clinical form import."
     printf '%s\n' "# Written by ./catch-up.sh or ./import-forms.sh; re-running either overwrites it."
-    printf '%s\n' "# Contains a password: keep it mode 0600."
-    printf 'BAHMNI_URL=%s\n'        "$BAHMNI_URL"
-    printf 'BAHMNI_USER=%s\n'       "$BAHMNI_USER"
-    printf 'BAHMNI_PASS=%s\n'       "$BAHMNI_PASS"
-    printf 'BAHMNI_FORMS_DIR=%s\n'  "$FORMS_DIR"
-    printf 'BAHMNI_STATE_FILE=%s\n' "$FORM_IMPORT_STATE"
-    printf 'BAHMNI_INSECURE=%s\n'   "$FORM_IMPORT_INSECURE"
+    printf '%s\n' "# Contains a password: keep it mode 0600. This file is sourced by bash, so"
+    printf '%s\n' "# quote values when editing by hand, e.g. BAHMNI_PASS='my\$ecret'."
+    printf 'BAHMNI_URL=%q\n'        "$BAHMNI_URL"
+    printf 'BAHMNI_USER=%q\n'       "$BAHMNI_USER"
+    printf 'BAHMNI_PASS=%q\n'       "$BAHMNI_PASS"
+    printf 'BAHMNI_FORMS_DIR=%q\n'  "$FORMS_DIR"
+    printf 'BAHMNI_STATE_FILE=%q\n' "$FORM_IMPORT_STATE"
+    printf 'BAHMNI_INSECURE=%q\n'   "$FORM_IMPORT_INSECURE"
   } >"$tmp"
   # 0700 on the directory: the file inside is 0600, and a 0600 directory
   # could not be traversed to reach it.
@@ -378,11 +507,15 @@ install_form_import() {
   confirm "Install the form importer and import the clinical forms now?" \
     || { warn "Form import skipped by user."; return 0; }
 
-  _forms_prompt_credentials || {
-    warn "No EMR password available — skipping the form import and its schedule."
+  # Keeps a stored password the EMR accepts; prompts when it is missing or rejected.
+  local cred_rc=0
+  _forms_ensure_credentials || cred_rc=$?
+  if [ "$cred_rc" = "1" ]; then
+    warn "No working EMR password (${FORMS_CRED_NOTE}) — skipping the form import and its schedule."
     warn "Set it up later with:  sudo EREGISTER_BAHMNI_PASS='…' ./import-forms.sh"
     return 1
-  }
+  fi
+  info "Credentials: ${FORMS_CRED_NOTE}"
 
   # jq is not in the installer's own dependency set, but the importer needs it.
   if ! command -v jq >/dev/null 2>&1; then
@@ -396,7 +529,6 @@ install_form_import() {
   fi
 
   _forms_install_importer || return 1
-  _forms_write_env
   _forms_write_runner
 
   local rc=0

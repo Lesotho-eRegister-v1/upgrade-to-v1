@@ -87,8 +87,9 @@
 #   EREGISTER_UPGRADE_REF       branch to track (default main)
 #   EREGISTER_UPGRADE_REPO_DIR  where the managed checkout lives
 #                               (default <base>/v1/upgrade-to-v1)
-#   EREGISTER_BAHMNI_PASS       EMR password, when the form-import credentials
-#                               file has to be (re)created non-interactively
+#   EREGISTER_BAHMNI_PASS       EMR password for the form import; saved when the
+#                               EMR accepts it and the stored one is missing or
+#                               rejected (otherwise you are prompted)
 #   EREGISTER_CATCHUP_STACK_REPO=0    same as --no-stack
 #   EREGISTER_CATCHUP_DB_CHECK=0      skip the concept-count query
 #   EREGISTER_CATCHUP_RECREATE=0      same as --no-recreate

@@ -283,16 +283,16 @@ catchup_helper_scripts() {
     fi
 
     # --- credentials for the unattended runs -------------------------------
-    # Never overwrite a working env file: the password in it is the one the site
-    # actually uses, and this script may be running without any password at hand.
-    if as_root test -s "$FORM_IMPORT_ENV"; then
-      _cu_row OK config "$(basename "$FORM_IMPORT_ENV")" "present (left as-is)"
-    elif _forms_prompt_credentials; then
-      _forms_write_env >/dev/null 2>&1
-      _cu_row FIXED config "$(basename "$FORM_IMPORT_ENV")" "was missing — written for ${BAHMNI_USER}@${BAHMNI_URL}"
-    else
-      _cu_row GAP config "$(basename "$FORM_IMPORT_ENV")" "missing and no password given — the daily form import cannot run"
-    fi
+    # A working env file is never overwritten. One whose password the EMR
+    # REJECTS is: that job fails every night, so the operator is asked for the
+    # right password. If the EMR is not answering yet, the file is left alone.
+    local cred_rc=0
+    _forms_ensure_credentials || cred_rc=$?
+    case "$cred_rc" in
+      0) _cu_row OK    config "$(basename "$FORM_IMPORT_ENV")" "$FORMS_CRED_NOTE" ;;
+      3) _cu_row FIXED config "$(basename "$FORM_IMPORT_ENV")" "$FORMS_CRED_NOTE" ;;
+      *) _cu_row GAP   config "$(basename "$FORM_IMPORT_ENV")" "$FORMS_CRED_NOTE" ;;
+    esac
 
     local had_runner=0
     [ -x "$FORM_IMPORT_RUNNER" ] && had_runner=1
@@ -504,6 +504,16 @@ catchup_forms() {
 
   if ! confirm "Run the form import now?"; then
     _cu_row SKIP forms "import" "declined; the daily job still runs (${FORM_IMPORT_CRON})"
+    return 0
+  fi
+
+  # Check the password again right before using it. The credentials row above
+  # may have run while the EMR was still booting and could not verify anything;
+  # a rejected password gets a prompt here instead of a failed import.
+  local cred_rc=0
+  _forms_ensure_credentials || cred_rc=$?
+  if [ "$cred_rc" = "1" ]; then
+    _cu_row GAP forms "import" "not run — ${FORMS_CRED_NOTE}"
     return 0
   fi
 

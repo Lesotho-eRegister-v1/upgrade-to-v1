@@ -564,9 +564,12 @@ What it does, in order:
    when you ran the script from a clone somewhere else.
 3. **Reinstalls the generated helpers** — `eregister-autopull.sh`,
    `eregister-db-backup.sh`, `bahmni-form-import.sh`, `eregister-form-import.sh`
-   — from the release that was just pulled. An existing
-   `/etc/eregister/form-import.env` is never overwritten; a missing one is
-   written after prompting for the password.
+   — from the release that was just pulled. The password in
+   `/etc/eregister/form-import.env` is tested against the EMR: a working one is
+   left alone, a missing or **rejected** one is replaced after prompting for the
+   password (checked against the EMR before it is saved). While the EMR is
+   still booting nothing can be checked, so an existing file is kept as-is and
+   checked again just before the form import runs.
 4. **Checks all four scheduled jobs** (`eregister-db-backup`,
    `eregister-autopull`, `eregister-form-import`, `eregister-concept-import`)
    and installs whichever is absent, as a systemd timer or an `/etc/cron.d`
