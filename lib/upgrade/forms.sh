@@ -476,6 +476,121 @@ run_form_import() {
 }
 
 # -----------------------------------------------------------------------------
+# _forms_decode_entities — un-escape HTML entities in the form JSON the EMR
+# keeps INSIDE its own container (FORM_DECODE_DIR in the EMR_SERVICE service).
+#
+# WHY
+#   A deployed form can come back out of the EMR with the markup in its labels
+#   HTML-escaped — &amp; &lt; &gt; where the author wrote & < >. The clinical app
+#   then renders the entity text itself, and forms that reference those fields
+#   throw errors. The fix is textual: decode the three entities in place.
+#
+# WHY REPEATEDLY
+#   The escaping nests. &amp;lt; is "&lt;" that was escaped a second time, and
+#   one pass over it only gets back as far as &lt; — so a single pass can leave
+#   a file that is still wrong, and still wrong in a way the same pass would
+#   fix. It therefore runs again until a pass finds nothing left to change,
+#   rather than a fixed number of times: five levels of nesting take five passes,
+#   a site with one stops after the second, and FORM_DECODE_MAX_PASSES caps it
+#   so a pathological file cannot spin forever.
+#
+# Idempotent, and cheap on a clean folder: the first pass matches nothing and it
+# stops there. That is what makes it safe on every catch-up run.
+#
+# It runs BEFORE the EMR is recreated at the end of a catch-up, so the reloaded
+# instance reads the decoded files.
+#
+# Sets FORMS_DECODE_NOTE (one line for the caller's report) and
+# FORMS_DECODE_FILES (how many file rewrites it took). Returns:
+#   0  clean — nothing left escaped
+#   1  could not run (no docker compose, no stack dir, exec failed)
+#   3  FORM_DECODE_DIR does not exist inside the container
+#   4  still escaped after FORM_DECODE_MAX_PASSES passes
+# -----------------------------------------------------------------------------
+_forms_decode_entities() {
+  FORMS_DECODE_NOTE=""
+  FORMS_DECODE_FILES=0
+  local script out rc=0 decoded passes
+
+  # Same resolution the other container-facing modules do, so this works when
+  # forms.sh is loaded without concepts.sh (./import-forms.sh).
+  if [ -z "${DOCKER_COMPOSE:-}" ]; then
+    if docker compose version >/dev/null 2>&1; then DOCKER_COMPOSE="docker compose"
+    elif command -v docker-compose >/dev/null 2>&1; then DOCKER_COMPOSE="docker-compose"
+    else
+      FORMS_DECODE_NOTE="docker compose is not available on this host"
+      return 1
+    fi
+  fi
+  if [ ! -d "$RESTORE_DIR" ]; then
+    FORMS_DECODE_NOTE="no stack directory at ${RESTORE_DIR}"
+    return 1
+  fi
+
+  # The remote half, fed to `sh -s` on the container's stdin rather than wrapped
+  # in `sh -c '…'`: the loop below is full of quotes, and one level of shell
+  # quoting is enough for anybody. `find … -exec sh -c '…' _ {} +` (not -exec on
+  # each match) keeps it to a couple of processes and copes with the spaces and
+  # apostrophes in names like "HIV Treatment and Care Intake (Counselor's)_2.json".
+  IFS= read -r -d '' script <<'REMOTE' || true
+dir="${1:-}"; max="${2:-5}"
+[ -n "$dir" ] || { echo "no folder given"; exit 2; }
+[ -d "$dir" ] || { echo "not found: $dir"; exit 3; }
+
+pass=1
+while [ "$pass" -le "$max" ]; do
+  hits="$(find "$dir" -type f -name '*.json' -exec sh -c '
+            for f do
+              grep -qE "&amp;|&lt;|&gt;" "$f" || continue
+              sed -i -e "s/&amp;/\&/g" -e "s/&lt;/</g" -e "s/&gt;/>/g" "$f" \
+                && printf "%s\n" "$f"
+            done' _ {} + )"
+  if [ -z "$hits" ]; then
+    echo "clean after ${pass} pass(es)"
+    exit 0
+  fi
+  printf '%s\n' "$hits" | sed 's/^/  decoded: /'
+  pass=$(( pass + 1 ))
+done
+echo "still escaped after ${max} pass(es)"
+exit 4
+REMOTE
+
+  info "Decoding HTML entities in ${EMR_SERVICE}:${FORM_DECODE_DIR} (up to ${FORM_DECODE_MAX_PASSES} passes) …"
+  out="$( cd "$RESTORE_DIR" && printf '%s' "$script" \
+          | as_root $DOCKER_COMPOSE exec -T "$EMR_SERVICE" \
+              sh -s -- "$FORM_DECODE_DIR" "$FORM_DECODE_MAX_PASSES" 2>&1 )" || rc=$?
+  # An `if`, not `[ -n … ] && log …`: as the value of the last statement that
+  # would make the function return non-zero on a silent run, under `set -e`.
+  if [ -n "$out" ]; then log "$out"; fi
+
+  # `|| true`: grep -c exits 1 on no matches, and "no file was rewritten" is the
+  # good outcome here, not a failure.
+  decoded="$(printf '%s\n' "$out" | grep -c '^  decoded: ' || true)"
+  passes="$(printf '%s\n' "$out" | sed -n 's/^clean after \([0-9]*\) .*/\1/p' | tail -1)"
+  FORMS_DECODE_FILES="${decoded:-0}"
+
+  case "$rc" in
+    0)
+      if [ "${decoded:-0}" -eq 0 ]; then
+        FORMS_DECODE_NOTE="nothing escaped in ${EMR_SERVICE}:${FORM_DECODE_DIR}"
+      else
+        FORMS_DECODE_NOTE="${decoded} file rewrite(s) in ${EMR_SERVICE}:${FORM_DECODE_DIR}; clean on pass ${passes:-?}"
+      fi
+      return 0 ;;
+    3)
+      FORMS_DECODE_NOTE="${FORM_DECODE_DIR} does not exist in the '${EMR_SERVICE}' container — set EREGISTER_FORM_DECODE_DIR"
+      return 3 ;;
+    4)
+      FORMS_DECODE_NOTE="still escaped after ${FORM_DECODE_MAX_PASSES} pass(es) — raise EREGISTER_FORM_DECODE_MAX_PASSES and re-run"
+      return 4 ;;
+    *)
+      FORMS_DECODE_NOTE="could not run in '${EMR_SERVICE}' (rc=${rc}): $(printf '%s' "$out" | tail -1)"
+      return 1 ;;
+  esac
+}
+
+# -----------------------------------------------------------------------------
 # install_form_import — all-in-one entry: install, credential, schedule and run.
 # Used by the standalone import-forms.sh. install.sh does NOT call it (see WHO
 # LOADS THIS at the top), and catch-up.sh does not either — catch-up drives the

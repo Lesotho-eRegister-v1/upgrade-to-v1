@@ -345,6 +345,63 @@ Called with no path the importer imports
 the deployed clone — recursively. (It used to default to a local `forms/`
 folder.) Files or folders can still be passed explicitly.
 
+## Decoding the deployed form JSON
+
+The EMR keeps the forms it has imported as JSON of its own, in
+`/home/bahmni/clinical_forms` **inside the `openmrs` container**. Some of those
+files come back out with the markup in their labels HTML-escaped — `&amp;`,
+`&lt;`, `&gt;` where the author wrote `&`, `<`, `>`. The clinical app then
+renders the entity text itself, and the forms referencing those fields throw
+errors.
+
+`catch-up.sh` decodes them in place, straight after the import and before it
+reloads the EMR, so the reloaded instance reads the corrected files:
+
+```bash
+docker compose exec -T openmrs sh -c '…'   # grep for the entities, sed them out
+```
+
+It runs the pass **repeatedly**, because the escaping nests: `&amp;lt;` is
+`&lt;` escaped a second time, and one pass over it only gets back as far as
+`&lt;`. So it decodes, looks again, and stops at the first pass that finds
+nothing left — up to `EREGISTER_FORM_DECODE_MAX_PASSES` (default 5) times. On a
+folder that is already clean the first pass matches nothing and it stops there,
+which is what makes it safe on every run.
+
+The report says which it was:
+
+```text
+  ⟳ FIXED forms     decode      14 file rewrite(s) in openmrs:/home/bahmni/clinical_forms; clean on pass 3
+  ✔ OK    forms     decode      nothing escaped in openmrs:/home/bahmni/clinical_forms
+```
+
+Skip or tune it with `--no-decode` / `EREGISTER_FORM_DECODE=0`,
+`EREGISTER_FORM_DECODE_DIR` (the path inside the container) and
+`EREGISTER_FORM_DECODE_MAX_PASSES`. `--no-forms` skips it too. `import-forms.sh`
+does **not** do this step — it is part of the catch-up run.
+
+### Decoding on its own
+
+On a site whose forms are already deployed and only need this clean-up, there is
+no reason to sit through a full reconcile:
+
+```bash
+sudo ./catch-up.sh --decode
+```
+
+That runs the decode and **stops**. No repo is updated, nothing is imported or
+scheduled, no health probe runs, and the EMR keeps serving — seconds instead of
+the usual run, and the only thing written is the JSON in the container. You still
+get a report table and the usual exit status (`0` when there are no `GAP` rows).
+
+It is spelled `--decode-only` as well, because `--decode` sitting next to
+`--no-decode` reads like a toggle and it is not one: `--no-decode` skips this
+step within a full run, `--decode` makes it the whole run. Passing both is an
+error rather than a guess.
+
+A decoded form is served from the file the EMR read at boot, so if the old text
+is still on screen afterwards, restart the service — the run prints the command.
+
 ## How it knows a form is new
 
 Detection is on file **content**, never on the file name or its timestamp:
@@ -524,10 +581,13 @@ curl -fsSL --retry 8 --retry-max-time 180 https://raw.githubusercontent.com/Leso
 ```
 (or, from the upgrade repo: `bash ./catch-up.sh`)
 
-Everything it checks is read-only. Two steps write: the report definition
-import (one table, backed up first, skipped when already current) and the EMR
-reload, which is the only step that acts on a running container and comes last.
-Both are confirmed before they run.
+Everything it checks is read-only, with four exceptions. The form decode
+rewrites the form JSON inside the EMR container; the report definition import
+replaces one table (backed up first, skipped when already current); the
+identifier-source retirement updates one row, reversibly; and the EMR reload,
+last, is the only step that acts on a running container. The last three are each
+confirmed before they run — the decode is not, being a fix-up of the import you
+just confirmed.
 
 What it does, in order:
 
@@ -578,7 +638,12 @@ What it does, in order:
 5. **Runs the clinical form import** — on a freshly installed site this is the
    first time its forms reach the EMR at all, because `install.sh` does not
    import them. Only forms whose content changed are deployed, so on a site that
-   is already current it is a no-op.
+   is already current it is a no-op. It then **decodes the HTML entities** in the
+   form JSON the EMR keeps in `/home/bahmni/clinical_forms`, repeating the pass
+   until one finds nothing left to decode — see
+   [Decoding the deployed form JSON](#decoding-the-deployed-form-json). The two
+   get a row each, and the decode runs even when the import deployed nothing:
+   the escaping is in files the EMR already holds. Skip with `--no-decode`.
 6. **Reports on the concept dictionary** — which dump is on disk, whether it is
    the one actually imported (comparing its sha256 against the import marker),
    and the live `concept` row count. Catch-up never imports it itself: that
@@ -594,15 +659,26 @@ What it does, in order:
    table (`serialized_object`), backs that table up first, and does nothing at
    all when the dump in the clone is already the one in the database. Skip with
    `--no-reporting`.
-8. **Reports on the database backups** — how many dumps there are and how old
+8. **Retires the disused identifier source** — marks row 14 of
+   `idgen_identifier_source` retired in the `openmrs` database, so it stops being
+   offered for new identifiers. The row stays, and so does every identifier it
+   has already issued; the run prints the single statement that undoes it. The
+   `UPDATE` matches only a source that is **still in use**, so a second run
+   changes nothing and the original `date_retired` survives. Ids are per-site
+   auto-increments, so the step reads the row first and the report names what it
+   retired; an id that is not there is a `GAP` rather than a quiet pass, and
+   `EREGISTER_IDGEN_RETIRE_ID` overrides it. Skip with `--no-idgen`, which is
+   worth doing on a site where that source is wanted: the step **re-asserts**,
+   so a deliberate un-retire would otherwise be undone by the next run.
+9. **Reports on the database backups** — how many dumps there are and how old
    the newest one is. The schedule row above only says a timer exists; this row
    says it is producing files, which is the question that matters. A newest dump
    over 36h old is a `GAP`, as is any leftover `.part` file. Silence with
    `--no-db-backup`.
-9. **Reports service health** — `docker compose ps` per service plus HTTP
-   probes of the OpenMRS REST API and the Bahmni UI. This is the site **as
-   found**, probed before the reload below.
-10. **Reloads the EMR**, last, so everything refreshed above is actually picked
+10. **Reports service health** — `docker compose ps` per service plus HTTP
+    probes of the OpenMRS REST API and the Bahmni UI. This is the site **as
+    found**, probed before the reload below.
+11. **Reloads the EMR**, last, so everything refreshed above is actually picked
     up:
 
     ```bash
@@ -629,9 +705,11 @@ Then it prints one table:
   ⟳ FIXED script    eregister-form-import.sh         was missing — installed
   ⟳ FIXED cron      eregister-form-import            installed — systemd timer active, next: Tue 03:30
   ✔ OK    forms     import                           imported 0/12 form(s), 12 unchanged, 0 failed
+  ⟳ FIXED forms     decode                           14 file rewrite(s) in openmrs:/home/bahmni/clinical_forms; clean on pass 3
   ✔ OK    concepts  imported                         newer dump pending — daily job loads it (30 4 * * *); in the DB now: omrs_concept_dictionary_20260804.sql from 2026-06-14T09:12:03Z
   ✔ OK    concepts  database                         openmrs.concept holds 412345 rows
   ⟳ FIXED reporting definitions                      Serialized_Object.sql imported — serialized_object holds 3402 rows
+  ⟳ FIXED idgen     source 14                        '<source name>' retired (reason: No longer in use)
   ✔ OK    backup    dumps                            14 kept (limit 14); newest openmrs_20260901_013012.sql.gz 284M, 9h old
   ✘ GAP   service   reports                          exited — Exited (1) 2 hours ago
   ✔ OK    endpoint  openmrs REST                     https://localhost/openmrs — HTTP 200
@@ -643,10 +721,19 @@ left alone · `GAP` = needs a human. The exit status is `0` only when there are
 no `GAP` rows, so it can be wired into monitoring:
 
 ```bash
-30 6 * * 1 /var/lib/v1/upgrade-to-v1/catch-up.sh --yes --no-forms --no-recreate >> /var/log/eregister-catchup.log 2>&1
+30 6 * * 1 /var/lib/v1/upgrade-to-v1/catch-up.sh --yes --no-forms --no-idgen --no-recreate >> /var/log/eregister-catchup.log 2>&1
 ```
 
-Flags: `--yes`, `--no-recreate`, `--force-repos`, `--no-stack`, `--no-forms`,
+Note what that line switches off. `--yes` answers every confirmation with "yes",
+so a scheduled run would otherwise import forms, retire the identifier source
+and reload the EMR unattended, week after week. A monitoring check should report
+the site, not change it — keep the skips, and do the writing runs by hand.
+
+Flags: `--decode` (run only the form-JSON decode, then stop — see
+[Decoding on its own](#decoding-on-its-own)), `--yes`, `--no-recreate`,
+`--force-repos`, `--no-stack`, `--no-forms`,
+`--no-decode` (import the forms but leave the entities in what the EMR wrote),
+`--no-idgen` (leave the identifier source in use),
 `--no-concepts` (leave the dictionary alone entirely — no DB probe, and the
 daily concept job is neither installed nor refreshed), `--no-reporting` (clone
 and fast-forward `openmrs_reporting_release`, but do not import it),
@@ -661,7 +748,10 @@ for `--yes` if the credentials file is missing), `EREGISTER_UPGRADE_REPO`,
 `EREGISTER_DB_BACKUP=0`, `EREGISTER_DB_BACKUP_CRON`, `EREGISTER_DB_BACKUP_KEEP`,
 `EREGISTER_EMR_SERVICE`, `EREGISTER_CONCEPT_IMPORT=0`,
 `EREGISTER_IMPORT_REPORTING=0`, `EREGISTER_REPORTING_SQL_NAME`,
-`EREGISTER_REF_REPORTING`.
+`EREGISTER_REF_REPORTING`, `EREGISTER_FORM_DECODE=0`,
+`EREGISTER_FORM_DECODE_DIR`, `EREGISTER_FORM_DECODE_MAX_PASSES`,
+`EREGISTER_IDGEN_RETIRE=0`, `EREGISTER_IDGEN_RETIRE_ID`,
+`EREGISTER_IDGEN_RETIRE_REASON`, `EREGISTER_IDGEN_RETIRE_BY`.
 
 > [!WARNING]
 > The monitoring/cron use above should carry `--no-recreate`. Left on, every

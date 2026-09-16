@@ -111,6 +111,43 @@ FORM_IMPORT_CRON="${EREGISTER_FORM_IMPORT_CRON:-30 3 * * *}"
 # auto-pull was declined. Set to 0 to import strictly what is on disk.
 FORM_IMPORT_SELF_PULL="${EREGISTER_FORM_IMPORT_SELF_PULL:-1}"
 
+# --- Entity decode of the deployed form JSON ---------------------------------
+# The EMR keeps the forms it has imported as JSON inside the openmrs container,
+# and some of those files come back out with their markup HTML-escaped: &amp;
+# &lt; &gt; where the author wrote & < >. The clinical app then renders the
+# entity text itself. catch-up.sh decodes them in place after the form import
+# and before the EMR is reloaded. See _forms_decode_entities in
+# lib/upgrade/forms.sh. 0 (or --no-decode) skips it.
+FORM_DECODE="${EREGISTER_FORM_DECODE:-1}"
+# The folder to decode, as seen INSIDE the EMR service (not a host path).
+FORM_DECODE_DIR="${EREGISTER_FORM_DECODE_DIR:-/home/bahmni/clinical_forms}"
+# Upper bound on the decode passes, because the escaping nests: &amp;lt; is
+# "&lt;" escaped a second time, and one pass over it only gets back to &lt;. The
+# loop stops as soon as a pass finds nothing left to change, so this caps only
+# how deep a nesting can be unwound in one run.
+FORM_DECODE_MAX_PASSES="${EREGISTER_FORM_DECODE_MAX_PASSES:-5}"
+# Run ONLY that decode and stop (--decode). The fast path for a site whose forms
+# are already deployed and just need the entity clean-up: no repo is updated,
+# nothing is imported or scheduled, no health probe runs and the EMR is left
+# alone. See catch_up in lib/upgrade/catchup.sh.
+CATCHUP_DECODE_ONLY="${EREGISTER_CATCHUP_DECODE_ONLY:-0}"
+
+# --- Retiring a disused identifier source ------------------------------------
+# One row of idgen_identifier_source in the 'openmrs' database is marked retired
+# by catch-up.sh: the source stops being offered for new identifiers, while the
+# row and every identifier it has already issued stay exactly as they are. The
+# statement carries `AND retired = 0`, so the second and every later run match
+# nothing — the database is its own state file. See lib/upgrade/idgen.sh.
+IDGEN_RETIRE="${EREGISTER_IDGEN_RETIRE:-1}"          # 0 (or --no-idgen) disables it
+# The id to retire. Auto-increment ids are per-site, so a site whose table is
+# numbered differently sets this (or passes --no-idgen); the step reads the row
+# first and reports the NAME it is about to retire, and does nothing at all when
+# there is no such id.
+IDGEN_RETIRE_ID="${EREGISTER_IDGEN_RETIRE_ID:-14}"
+IDGEN_RETIRE_REASON="${EREGISTER_IDGEN_RETIRE_REASON:-No longer in use}"
+# users.user_id recorded as the retiring user. 1 is the default admin account.
+IDGEN_RETIRE_BY="${EREGISTER_IDGEN_RETIRE_BY:-1}"
+
 # --- Scheduled concept-dictionary import ------------------------------------
 # A job of its own, separate from the daily form import: it keeps the
 # eregister_concepts_release_v1 clone current and imports the dump it holds into

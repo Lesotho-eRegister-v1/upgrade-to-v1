@@ -38,7 +38,9 @@
 #   4. the clinical form import             -> INSTALLED here (importer,
 #      credentials, runner, daily timer) and then RUN. Not a repair of something
 #      install.sh did: install.sh never did it. Only changed forms deploy, and a
-#      changed form goes out as a new version.
+#      changed form goes out as a new version. The JSON the EMR writes out is
+#      then DECODED in place (&amp; &lt; &gt; -> & < >), which nothing else on
+#      the site does, and which the reload in step 8 makes take effect.
 #   5. the concept dictionary               -> reported, never auto-imported.
 #      It drops and recreates the concept_*/drug* tables, which is too blunt to
 #      do behind an operator's back — and it no longer needs doing here: the
@@ -52,6 +54,11 @@
 #      skipped outright when its content is already the one in the database.
 #      Nothing else is scheduled to load it, so reporting a gap here would leave
 #      that gap open forever.
+#   5c. the disused identifier source     -> RETIRED, the other write. One row of
+#      idgen_identifier_source stops being offered for new identifiers; the row
+#      and the identifiers it issued are kept, and it is undone by a single
+#      statement, which the run prints. Only a source still in use is matched,
+#      so it is a no-op from the second run on.
 #   6. the nightly database dumps           -> reported: how many, and how old
 #      the newest is. A backup job that has been failing for a fortnight looks
 #      exactly like one that is working until someone counts the files.
@@ -476,20 +483,38 @@ catchup_schedules() {
 }
 
 # -----------------------------------------------------------------------------
-# catchup_forms — run the form import once, now. On a fresh site this is the
-# first time its forms are deployed at all: install.sh no longer imports them,
-# so until this runs (or ./import-forms.sh does) the clone on disk has never
-# reached the EMR. Cheap and safe to repeat: the importer deploys only the forms
-# whose content changed since the last run, and a changed form goes out as a NEW
-# version, so nothing live is overwritten.
+# catchup_forms — the forms step, in two halves that get a report row each:
+# deploy the forms, then decode the entities in what the EMR wrote. They fail
+# independently — an import that never ran still leaves a folder worth decoding,
+# and a decode that cannot reach the container says nothing about the import
+# that just succeeded — so neither is allowed to hide the other.
 # -----------------------------------------------------------------------------
 catchup_forms() {
   step "Clinical observation forms"
 
   if [ "$IMPORT_FORMS" != "1" ]; then
     _cu_row SKIP forms "import" "disabled (--no-forms)"
+    _cu_row SKIP forms "decode" "disabled (--no-forms)"
     return 0
   fi
+
+  _cu_forms_import
+  # Deliberately not conditional on the import above. What is being decoded is
+  # the JSON the EMR already holds, so a run that deployed nothing — or one the
+  # operator declined — can still face a folder full of &amp;lt; from an
+  # earlier release.
+  _cu_forms_decode
+}
+
+# -----------------------------------------------------------------------------
+# _cu_forms_import — run the form import once, now. On a fresh site this is the
+# first time its forms are deployed at all: install.sh no longer imports them,
+# so until this runs (or ./import-forms.sh does) the clone on disk has never
+# reached the EMR. Cheap and safe to repeat: the importer deploys only the forms
+# whose content changed since the last run, and a changed form goes out as a NEW
+# version, so nothing live is overwritten.
+# -----------------------------------------------------------------------------
+_cu_forms_import() {
   if [ ! -x "$FORM_IMPORT_RUNNER" ] || ! as_root test -s "$FORM_IMPORT_ENV"; then
     _cu_row GAP forms "import" "not runnable (missing runner or credentials)"
     return 0
@@ -529,6 +554,31 @@ catchup_forms() {
     fi
   else
     _cu_row GAP forms "import" "run failed — see ${FORM_IMPORT_LOG}"
+  fi
+}
+
+# -----------------------------------------------------------------------------
+# _cu_forms_decode — decode the HTML entities (&amp; &lt; &gt;) in the form JSON
+# the EMR keeps inside its container, repeatedly until a pass finds none left.
+# That escaping makes the clinical app render the entity text and throws errors
+# on the forms that reference those fields; nothing else on the site undoes it,
+# and it is a text edit to files the EMR re-reads at boot — which the reload at
+# the end of this run provides. See _forms_decode_entities in forms.sh.
+# -----------------------------------------------------------------------------
+_cu_forms_decode() {
+  if [ "${FORM_DECODE:-1}" != "1" ]; then
+    _cu_row SKIP forms "decode" "left alone (--no-decode)"
+    return 0
+  fi
+
+  local rc=0
+  _forms_decode_entities || rc=$?
+  if [ "$rc" != "0" ]; then
+    _cu_row GAP forms "decode" "$FORMS_DECODE_NOTE"
+  elif [ "${FORMS_DECODE_FILES:-0}" -eq 0 ]; then
+    _cu_row OK forms "decode" "$FORMS_DECODE_NOTE"
+  else
+    _cu_row FIXED forms "decode" "$FORMS_DECODE_NOTE"
   fi
 }
 
@@ -635,6 +685,39 @@ catchup_reporting() {
     no-dump)  _cu_row GAP   reporting "dump"        "${REPORTING_DETAIL}" ;;
     failed)   _cu_row GAP   reporting "definitions" "${REPORTING_DETAIL:-import failed}" ;;
     *)        _cu_row GAP   reporting "definitions" "import did not report a status" ;;
+  esac
+}
+
+# -----------------------------------------------------------------------------
+# catchup_idgen — retire the disused identifier source.
+#
+# The second write catch-up performs itself, and it earns that the same way the
+# report definitions do: one row of one table, no patient data, reversible in a
+# single statement, and nothing else on the site will ever do it.
+#
+# 'no-row' is a GAP rather than a SKIP on purpose. It means the change this
+# script exists to make did not happen — the id is not what it is assumed to be
+# on this site — and that should show up in monitoring rather than pass quietly.
+# A site where the source is legitimately absent or wanted passes --no-idgen.
+#
+# The heavy lifting is in lib/upgrade/idgen.sh; this turns the status it comes
+# back with into a report row.
+# -----------------------------------------------------------------------------
+catchup_idgen() {
+  # retire_idgen_source prints its own step banner.
+  # `|| true`: a failed update is a GAP row, not a reason to lose the report.
+  retire_idgen_source || true
+
+  local name="source ${IDGEN_RETIRE_ID}"
+  case "${IDGEN_STATUS:-}" in
+    retired)  _cu_row FIXED idgen "$name" "${IDGEN_DETAIL}" ;;
+    already)  _cu_row OK    idgen "$name" "${IDGEN_DETAIL}" ;;
+    disabled) _cu_row SKIP  idgen "$name" "${IDGEN_DETAIL}" ;;
+    declined) _cu_row SKIP  idgen "$name" "${IDGEN_DETAIL}" ;;
+    no-row)   _cu_row GAP   idgen "$name" "${IDGEN_DETAIL}" ;;
+    no-db)    _cu_row GAP   idgen "$name" "${IDGEN_DETAIL}" ;;
+    failed)   _cu_row GAP   idgen "$name" "${IDGEN_DETAIL:-the UPDATE failed}" ;;
+    *)        _cu_row GAP   idgen "$name" "the step did not report a status" ;;
   esac
 }
 
@@ -845,7 +928,12 @@ catchup_report() {
   printf '\n' >&2
   info "OK = already current · FIXED = redone by this run · SKIP = left alone · GAP = needs attention"
 
-  if [ "$CATCHUP_GAPS" -eq 0 ]; then
+  if [ "$CATCHUP_GAPS" -eq 0 ] && [ "${CATCHUP_DECODE_ONLY:-0}" = "1" ]; then
+    # The full verdict would claim the site matches what the installer leaves
+    # behind. A decode-only run checked exactly one thing and has no standing to
+    # say that.
+    success "Decode complete: nothing left escaped. Nothing else was checked."
+  elif [ "$CATCHUP_GAPS" -eq 0 ]; then
     success "No gaps: this site matches what the installer is meant to leave behind."
   else
     warn "${CATCHUP_GAPS} item(s) need attention — see the ✘ rows above."
@@ -853,6 +941,24 @@ catchup_report() {
 
   if [ "$CATCHUP_EMR_RECREATED" = "1" ]; then
     notice "'${EMR_SERVICE}' was just recreated and is still booting. Give it 30+ minutes; the endpoint rows above were probed BEFORE the reload."
+  fi
+
+  # A decode-only run checked none of the things the full footer talks about, so
+  # it gets a footer about what it actually did.
+  if [ "${CATCHUP_DECODE_ONLY:-0}" = "1" ]; then
+    cat >&2 <<EOF
+
+  Decode-only run (--decode). Nothing else was checked, updated or imported, and
+  no container was stopped or restarted.
+
+  If a form still shows the old &lt; text, the EMR is serving what it read at
+  boot — restart it so it re-reads the files:
+      cd ${RESTORE_DIR} && ${DOCKER_COMPOSE:-docker compose} restart ${EMR_SERVICE}
+
+  The full reconcile (repos, schedules, imports, health, EMR reload):
+      sudo ${UPGRADE_REPO_DIR}/catch-up.sh
+EOF
+    return 0
   fi
 
   local touched="Nothing here stopped or restarted a container."
@@ -877,6 +983,15 @@ catchup_report() {
       force one:   sudo rm ${REPORTING_IMPORT_STATE}, then run that again
       undo one:    the pre-import dump in ${BACKUP_DIR}/reporting-preimport-*.sql
     New reports only appear after ${EMR_SERVICE} restarts.
+
+  Identifier source ${IDGEN_RETIRE_ID} — retired in '${DB_NAME}' by this script. It matches
+  only a source still in use, so re-running changes nothing; --no-idgen skips it:
+      see them all: SELECT id, name, retired FROM idgen_identifier_source;
+      undo it:      cd ${RESTORE_DIR} && ${DOCKER_COMPOSE:-docker compose} exec -T ${DB_SERVICE} \\
+                      mysql -u${DB_USER} -p ${DB_NAME} -e "UPDATE idgen_identifier_source \\
+                      SET retired = 0, retired_by = NULL, date_retired = NULL, \\
+                      retire_reason = NULL WHERE id = ${IDGEN_RETIRE_ID};"
+    Pass --no-idgen afterwards, or the next run retires it again.
 
   Database backups — nightly (${DB_BACKUP_CRON}), kept ${DB_BACKUP_KEEP} deep:
       take one now: sudo ${DB_BACKUP_RUNNER}
@@ -904,12 +1019,28 @@ catch_up() {
     _cu_row "$EREGISTER_CATCHUP_SELF_STATUS" self "upgrade-to-v1" \
             "${EREGISTER_CATCHUP_SELF_DETAIL:-}"
   fi
+
+  # --decode: the fast path for a site whose forms are already deployed and only
+  # need the entity clean-up. Everything below — the repos, the helpers, the
+  # schedules, the import, the two DB writes, the health probes and the EMR
+  # reload — is skipped outright, so this costs seconds and touches nothing but
+  # the JSON in the EMR container. The self-update row above is kept: it already
+  # happened in phase 1, and a run that quietly updated itself should say so.
+  if [ "${CATCHUP_DECODE_ONLY:-0}" = "1" ]; then
+    step "Clinical observation forms (decode only)"
+    _cu_forms_decode
+    catchup_report
+    if [ "$CATCHUP_GAPS" -eq 0 ]; then return 0; fi
+    return 1
+  fi
+
   catchup_repos
   catchup_helper_scripts
   catchup_schedules
   catchup_forms
   catchup_concepts
   catchup_reporting     # the one import catch-up does itself (see the function)
+  catchup_idgen         # the other write: retiring the disused identifier source
   catchup_db_backups
   catchup_services      # health of the site AS FOUND, before anything is reloaded
   # `|| true` because catch-up.sh runs under `set -e`: this is the only step

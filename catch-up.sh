@@ -9,11 +9,15 @@
 # backup and restarts everything.
 #
 #   Read-mostly: every check is read-only and no repo with local changes is ever
-#   reset. TWO steps write. The first imports the OpenMRS report definitions
-#   (openmrs_reporting_release -> the serialized_object table of the 'openmrs'
-#   database), after dumping that table to bahmni-backup so it can be undone —
-#   skip it with --no-reporting. The second is the last job: it recreates the
-#   EMR service so everything refreshed above is actually loaded:
+#   reset. FOUR steps write. The first decodes the HTML entities in the form JSON
+#   the EMR holds in /home/bahmni/clinical_forms — skip it with --no-decode. The
+#   second imports the OpenMRS report definitions (openmrs_reporting_release ->
+#   the serialized_object table of the 'openmrs' database), after dumping that
+#   table to bahmni-backup so it can be undone — skip it with --no-reporting. The
+#   third retires one row of idgen_identifier_source in that same database,
+#   reversibly and only while it is still in use — skip it with --no-idgen. The
+#   last is the final job: it recreates the EMR service so everything refreshed
+#   above is actually loaded:
 #
 #       docker compose up -d --force-recreate --renew-anon-volumes openmrs
 #
@@ -32,13 +36,22 @@
 #   4. checks all FOUR scheduled jobs (repo auto-pull, daily clinical form
 #      import, daily concept-dictionary import, daily database backup) and
 #      installs whichever is missing
-#   5. runs the form import (only forms whose content changed are deployed)
+#   5. runs the form import (only forms whose content changed are deployed), then
+#      decodes the HTML entities (&amp; &lt; &gt;) in the form JSON the EMR keeps
+#      in /home/bahmni/clinical_forms — repeatedly, because the escaping nests,
+#      until a pass finds nothing left to decode. --no-decode skips it
 #   5b. imports the OpenMRS report definitions from openmrs_reporting_release
 #      into the 'openmrs' database of the openmrsdb service. This is the ONE
 #      import catch-up performs itself: it replaces a single table
 #      (serialized_object — the report library), takes a pre-import backup of it
 #      first, and does nothing at all when the dump in the clone is already the
 #      one in the database. --no-reporting skips it
+#   5c. retires the disused identifier source — one row of idgen_identifier_source
+#      in the 'openmrs' database (id 14 by default), so it stops being offered
+#      for new identifiers. The row and the identifiers it already issued are
+#      kept, and the report prints the statement that undoes it. It matches only
+#      a source that is still in use, so a second run changes nothing.
+#      --no-idgen skips it
 #   6. reports on the concept dictionary: which dump is on disk, and whether it
 #      is the one actually imported. Catch-up never imports it itself — that is
 #      the daily concept job's business (or ./import-concepts.sh by hand)
@@ -48,26 +61,47 @@
 #   8. recreates the EMR service, last, so the refreshed config/omods/forms are
 #      loaded — skip with --no-recreate
 #
+# --decode short-circuits all of that: it runs the decode from step 5 and
+# nothing else, for a site that only needs that clean-up.
+#
 # and ends with a single table: what was already OK, what it redid, what it
 # deliberately left alone, and what still needs a human. Exit status is 0 when
 # there are no gaps, so it doubles as a monitoring check.
 #
 # USAGE
 #   curl -fsSL --retry 8 --retry-max-time 180 <raw>/catch-up.sh | bash
-#   ./catch-up.sh [--yes] [--no-stack] [--no-forms] [--no-concepts]
-#                 [--no-reporting] [--no-db-backup] [--no-recreate]
+#   ./catch-up.sh [--decode]
+#   ./catch-up.sh [--yes] [--no-stack] [--no-forms] [--no-decode] [--no-concepts]
+#                 [--no-reporting] [--no-idgen] [--no-db-backup] [--no-recreate]
 #                 [--force-repos] [--install-dir DIR] [--no-color] [--help]
 #
+#   --decode         DECODE AND NOTHING ELSE, then stop. For a site whose forms
+#                    are already deployed and only need the entity clean-up in
+#                    /home/bahmni/clinical_forms. No repo is updated, nothing is
+#                    imported or scheduled, no health probe runs, and the EMR is
+#                    left running — so it costs seconds instead of the usual run.
+#                    Spelled --decode-only too, since it is the opposite of a
+#                    skip flag and sits next to --no-decode. The two contradict
+#                    each other and passing both is an error.
 #   -y, --yes        Non-interactive; assume "yes" at every prompt.
 #   --no-stack       Do not fast-forward bahmni-docker-ls (the compose files the
 #                    running stack reads). Everything else is still updated.
 #   --no-forms       Leave the clinical form import and its schedule alone.
+#                    Implies --no-decode.
+#   --no-decode      Do not decode the HTML entities in the form JSON the EMR
+#                    holds in /home/bahmni/clinical_forms. The import still runs;
+#                    only the clean-up pass over what it wrote is skipped.
 #   --no-concepts    Leave the concept dictionary alone: skip the concept-count
 #                    query, and neither install nor refresh the daily
 #                    concept-import job.
 #   --no-reporting   Do not import the OpenMRS report definitions from the
 #                    openmrs_reporting_release clone. The repo is still cloned
 #                    and fast-forwarded; only the database import is skipped.
+#   --no-idgen       Do not retire the disused identifier source (row
+#                    EREGISTER_IDGEN_RETIRE_ID of idgen_identifier_source,
+#                    default 14). Use this on a site where that source is still
+#                    wanted: the step RE-ASSERTS, so a hand-made un-retire is
+#                    otherwise undone by the next run.
 #   --no-db-backup   Leave the daily database backup alone: neither install nor
 #                    refresh it, and do not report on the dumps it has taken.
 #   --no-recreate    Do NOT recreate the EMR service at the end. Nothing then
@@ -90,10 +124,21 @@
 #   EREGISTER_BAHMNI_PASS       EMR password for the form import; saved when the
 #                               EMR accepts it and the stored one is missing or
 #                               rejected (otherwise you are prompted)
+#   EREGISTER_FORM_DECODE=0           same as --no-decode
+#   EREGISTER_FORM_DECODE_DIR         folder to decode INSIDE the EMR service
+#                                     (default /home/bahmni/clinical_forms)
+#   EREGISTER_FORM_DECODE_MAX_PASSES  ceiling on the decode passes (default 5);
+#                                     it stops early as soon as a pass is clean
+#   EREGISTER_CATCHUP_DECODE_ONLY=1   same as --decode
 #   EREGISTER_CATCHUP_STACK_REPO=0    same as --no-stack
 #   EREGISTER_CATCHUP_DB_CHECK=0      skip the concept-count query
 #   EREGISTER_CATCHUP_RECREATE=0      same as --no-recreate
 #   EREGISTER_IMPORT_REPORTING=0      same as --no-reporting
+#   EREGISTER_IDGEN_RETIRE=0          same as --no-idgen
+#   EREGISTER_IDGEN_RETIRE_ID         idgen_identifier_source row to retire
+#                                     (default 14; ids are per-site)
+#   EREGISTER_IDGEN_RETIRE_REASON     its retire_reason (default 'No longer in use')
+#   EREGISTER_IDGEN_RETIRE_BY         users.user_id to record (default 1, admin)
 #   EREGISTER_REPORTING_SQL_NAME      import only this file from the reporting
 #                                     clone (default: every *.sql in it)
 #   EREGISTER_REF_REPORTING           its branch (default master)
@@ -121,7 +166,8 @@ BOOTSTRAP_DIR=""   # temp dir holding downloaded modules; cleaned up on EXIT
 # Everything the reconcile touches: the repo updater (verify), the DB probe
 # (concepts), the report definition import (reporting — it reuses the DB
 # plumbing in concepts.sh, so that must be sourced first), the scheduled jobs
-# (autopull, dbbackup, forms) and the checks themselves.
+# (autopull, dbbackup, forms) and the checks themselves. idgen — the identifier
+# source retirement — reuses that same DB plumbing, so it follows concepts.sh too.
 EREGISTER_MODULES=(
   core/config.sh
   core/logging.sh
@@ -132,6 +178,7 @@ EREGISTER_MODULES=(
   upgrade/verify.sh
   upgrade/concepts.sh
   upgrade/reporting.sh
+  upgrade/idgen.sh
   upgrade/autopull.sh
   upgrade/dbbackup.sh
   upgrade/forms.sh
@@ -481,6 +528,12 @@ parse_catchup_args() {
       -y|--yes)       ASSUME_YES="1" ;;
       --no-stack)     CATCHUP_STACK_REPO="0" ;;
       --no-forms)     IMPORT_FORMS="0" ;;
+      # Only the entity clean-up over what the EMR wrote; the import still runs.
+      --no-decode)    FORM_DECODE="0" ;;
+      # The inverse: the clean-up and nothing else. --decode-only is accepted
+      # because "--decode" next to "--no-decode" reads like a toggle, and this
+      # is not one — it changes what the whole run does.
+      --decode|--decode-only) CATCHUP_DECODE_ONLY="1" ;;
       --no-db-backup) DB_BACKUP="0" ;;
       --no-recreate)  CATCHUP_RECREATE_EMR="0" ;;
       --force-repos)  CATCHUP_FORCE_REPOS="1" ;;
@@ -490,6 +543,9 @@ parse_catchup_args() {
       # The report definitions ARE imported by this script (see catchup_reporting
       # in lib/upgrade/catchup.sh for why that is safe); this opts out of it.
       --no-reporting) IMPORT_REPORTING="0" ;;
+      # Leaves the identifier source in use. Worth spelling out because the step
+      # re-asserts: without this, a deliberate un-retire is undone next run.
+      --no-idgen)     IDGEN_RETIRE="0" ;;
       --install-dir)  INSTALL_BASE="${2:?--install-dir needs a value}"; shift ;;
       --no-color)     USE_COLOR="no" ;;
       -h|--help)      usage; exit 0 ;;
@@ -497,6 +553,18 @@ parse_catchup_args() {
     esac
     shift
   done
+
+  # "Do only the decode" and "do everything except the decode" cannot both be
+  # meant. Saying so beats picking one and leaving the operator to work out why
+  # their run did nothing. EREGISTER_FORM_DECODE=0 lands here the same way.
+  if [ "$CATCHUP_DECODE_ONLY" = "1" ] && [ "$FORM_DECODE" != "1" ]; then
+    printf '%s\n' \
+      "--decode and --no-decode (or EREGISTER_FORM_DECODE=0) contradict each other:" \
+      "  --decode     run the entity decode and nothing else" \
+      "  --no-decode  run everything except the entity decode" \
+      "Pick one." >&2
+    exit 2
+  fi
 }
 
 main() {
@@ -513,11 +581,20 @@ main() {
 }
 
 banner_catchup() {
+  if [ "$CATCHUP_DECODE_ONLY" = "1" ]; then
+    info "eRegister v1 catch-up — DECODE ONLY (--decode)."
+    info "The one thing this run does is decode the HTML entities in the form JSON"
+    info "the '${EMR_SERVICE}' container holds in ${FORM_DECODE_DIR}."
+    info "No repo is updated, nothing is imported or scheduled, and '${EMR_SERVICE}' keeps running."
+    return 0
+  fi
   info "eRegister v1 catch-up — reconciling this site with the current release."
-  info "Read-mostly, with two exceptions: the report definitions are imported into"
-  info "'${DB_NAME}' (backed up first; --no-reporting skips it), and the '${EMR_SERVICE}' service is"
-  info "recreated at the end so the refreshed config, omods and forms are loaded"
-  info "(--no-recreate skips it)."
+  info "Read-mostly, with four exceptions: the form JSON in the '${EMR_SERVICE}' container is"
+  info "decoded (--no-decode skips it), the report definitions are imported into"
+  info "'${DB_NAME}' (backed up first; --no-reporting skips it), identifier source ${IDGEN_RETIRE_ID} is"
+  info "retired in that same database (reversibly; --no-idgen skips it), and the"
+  info "'${EMR_SERVICE}' service is recreated at the end so the refreshed config, omods and"
+  info "forms are loaded (--no-recreate skips it)."
 }
 
 main "$@"
