@@ -42,6 +42,7 @@ Useful flags: `--no-recreate` (skip the EMR reload — then nothing touches a
 running container), `--force-repos` (bring off-release repos back, discarding
 local changes), `--no-stack` (leave `bahmni-docker-ls` alone), `--no-forms`,
 `--no-retire-forms` (import the new forms but leave the old ones live),
+`--no-compose-up` (do not apply the compose files to the stack),
 `--no-db-backup` (leave the nightly database backup alone), `--install-dir DIR`. It exits `0` only when there are no gaps, so it also works
 as a monitoring check. Full detail: [Catching an early site up](#catching-an-early-site-up).
 
@@ -605,7 +606,7 @@ What it does, in order:
    | `openmrs_reporting_release` | `master` | the report definitions dump |
    | `implementer-interface-release` | `main` | |
    | `standard-config-ls` | `Bokang-changes` | |
-   | `bahmni-docker-ls` | `Bokang-changes` | the stack; disk only — see below |
+   | `bahmni-docker-ls` | `Bokang-changes` | the stack's compose files — see below |
    | `dhisconnector_mappings_v1` | `master` | |
    | `openmrs-v1-modules` | `main` | ~246 MB on first clone |
    | `upgrade-to-v1` | `main` | the site's own checkout of these scripts |
@@ -616,9 +617,10 @@ What it does, in order:
    detached HEAD, or tracks a different branch than the release pins; the row
    says which, and `--force-repos` brings it back on-release (discarding those
    changes). A clone pointing at a different remote is flagged, and re-pointed
-   only when it is otherwise on-release. `bahmni-docker-ls` is updated on disk
-   only; the report says it needs a `docker compose up -d` at your next
-   maintenance window (`--no-stack` skips it entirely).
+   only when it is otherwise on-release. `bahmni-docker-ls` holds the compose
+   files the running stack reads, so it is gated behind `--no-stack` (which
+   leaves it at its current commit); when it does move, step 11 applies it with
+   `docker compose up -d`.
 
    `upgrade-to-v1` gets a row of its own in addition to the self-update in step
    1, so the site's `/var/lib/v1/upgrade-to-v1` checkout is kept current even
@@ -713,7 +715,33 @@ What it does, in order:
 10. **Reports service health** — `docker compose ps` per service plus HTTP
     probes of the OpenMRS REST API and the Bahmni UI. This is the site **as
     found**, probed before the reload below.
-11. **Reloads the EMR**, last, so everything refreshed above is actually picked
+11. **Applies the compose files to the whole stack**:
+
+    ```bash
+    cd /var/lib/v1/bahmni-docker-ls/bahmni-standard && docker compose up -d
+    ```
+
+    Step 2 fast-forwarded `bahmni-docker-ls`, which *is* the compose files this
+    command reads — without this, pulling it changes files nothing ever reads,
+    and a site can sit for months on a stack definition it already has on disk.
+    The EMR reload below is not a substitute: it names one service, so a new
+    service, a changed image tag, a new port or a changed environment block
+    anywhere else in the file is invisible to it.
+
+    `up -d` is a **reconcile, not a restart**. A service whose resolved
+    definition did not change is left running exactly as it is; only containers
+    whose definition moved are recreated, plus anything missing or stopped. On a
+    site whose `bahmni-docker-ls` did not move, this is a no-op. Named volumes —
+    where the patient data lives — are never touched, though a compose change to
+    the database service does mean a few seconds of downtime there. It is
+    confirmed before it runs; `--no-compose-up` skips it.
+
+    By default it deploys the images the host already has, pulling only one it
+    has never seen. A release that moves a tag **in place** needs
+    `--pull-images` (`--pull always`), which is off by default because it turns
+    a fast local reconcile into a download over the site's link.
+
+12. **Reloads the EMR**, last, so everything refreshed above is actually picked
     up:
 
     ```bash
@@ -756,17 +784,24 @@ left alone · `GAP` = needs a human. The exit status is `0` only when there are
 no `GAP` rows, so it can be wired into monitoring:
 
 ```bash
-30 6 * * 1 /var/lib/v1/upgrade-to-v1/catch-up.sh --yes --no-forms --no-idgen --no-recreate >> /var/log/eregister-catchup.log 2>&1
+30 6 * * 1 /var/lib/v1/upgrade-to-v1/catch-up.sh --yes --no-forms --no-idgen --no-compose-up --no-recreate >> /var/log/eregister-catchup.log 2>&1
 ```
 
 Note what that line switches off. `--yes` answers every confirmation with "yes",
 so a scheduled run would otherwise retire and re-import forms, retire the
-identifier source and reload the EMR unattended, week after week. A monitoring check should report
-the site, not change it — keep the skips, and do the writing runs by hand.
+identifier source, apply the compose files to the stack and reload the EMR
+unattended, week after week. `--no-compose-up` matters most here: without it an
+unattended run would recreate whichever containers a freshly-pulled
+`bahmni-docker-ls` changed, at 06:30 on a Monday, with nobody watching. A
+monitoring check should report the site, not change it — keep the skips, and do
+the writing runs by hand.
 
 Flags: `--decode` (run only the form-JSON decode, then stop — see
 [Decoding on its own](#decoding-on-its-own)), `--yes`, `--no-recreate`,
 `--force-repos`, `--no-stack`, `--no-forms`,
+`--no-compose-up` (do not apply the compose files to the stack — it keeps
+running whatever its containers were created from), `--pull-images` (re-pull
+images before applying them),
 `--no-retire-forms` (deploy the new forms without retiring the ones they
 replace — both generations are then offered),
 `--no-decode` (import the forms but leave the entities in what the EMR wrote),
@@ -781,7 +816,8 @@ on), `--install-dir DIR`,
 for `--yes` if the credentials file is missing), `EREGISTER_UPGRADE_REPO`,
 `EREGISTER_UPGRADE_REF`, `EREGISTER_CATCHUP_STACK_REPO=0`,
 `EREGISTER_CATCHUP_DB_CHECK=0`, `EREGISTER_CATCHUP_HTTP_TIMEOUT`,
-`EREGISTER_CATCHUP_RECREATE=0`, `EREGISTER_CATCHUP_FORCE_REPOS=1`,
+`EREGISTER_CATCHUP_RECREATE=0`, `EREGISTER_CATCHUP_COMPOSE_UP=0`,
+`EREGISTER_CATCHUP_COMPOSE_PULL=1`, `EREGISTER_CATCHUP_FORCE_REPOS=1`,
 `EREGISTER_DB_BACKUP=0`, `EREGISTER_DB_BACKUP_CRON`, `EREGISTER_DB_BACKUP_KEEP`,
 `EREGISTER_EMR_SERVICE`, `EREGISTER_CONCEPT_IMPORT=0`,
 `EREGISTER_IMPORT_REPORTING=0`, `EREGISTER_REPORTING_SQL_NAME`,

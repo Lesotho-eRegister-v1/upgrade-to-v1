@@ -31,6 +31,12 @@
 #   service's ANONYMOUS volumes (named volumes and the database service are not
 #   touched). It is confirmed before it runs; --no-recreate skips it.
 #
+#   Immediately before it, the compose files the stack repo just delivered are
+#   applied to every service with a plain `docker compose up -d`. That is a
+#   reconcile: only a service whose definition actually moved is recreated, and
+#   named volumes are never touched. It is confirmed too; --no-compose-up skips
+#   it. Without it, pulling bahmni-docker-ls changes files nothing ever reads.
+#
 # It:
 #   1. updates this repo itself (git pull, then re-runs from the fresh copy)
 #   2. clones/fast-forwards every dependency repo the installer pulls:
@@ -66,6 +72,12 @@
 #   6b. reports on the nightly database dumps: how many there are and how old
 #      the newest one is, so a job that has been quietly failing is visible
 #   7. reports the health of the running services and endpoints (as found)
+#   7b. applies the compose files to the WHOLE stack (docker compose up -d in
+#      the stack dir), so the bahmni-docker-ls update from step 2 actually takes
+#      effect. It is a reconcile, not a restart: a service whose definition did
+#      not change is left running untouched, so on a site whose stack repo did
+#      not move this is a no-op. --no-compose-up skips it; --pull-images adds
+#      `--pull always` for a release that moves an image tag in place
 #   8. recreates the EMR service, last, so the refreshed config/omods/forms are
 #      loaded — skip with --no-recreate
 #
@@ -81,7 +93,8 @@
 #   ./catch-up.sh [--decode]
 #   ./catch-up.sh [--yes] [--no-stack] [--no-forms] [--no-retire-forms]
 #                 [--no-decode] [--no-concepts] [--no-reporting] [--no-idgen]
-#                 [--no-db-backup] [--no-recreate] [--force-repos]
+#                 [--no-db-backup] [--no-compose-up] [--pull-images]
+#                 [--no-recreate] [--force-repos]
 #                 [--install-dir DIR] [--no-color] [--help]
 #
 #   --decode         DECODE AND NOTHING ELSE, then stop. For a site whose forms
@@ -120,6 +133,16 @@
 #                    otherwise undone by the next run.
 #   --no-db-backup   Leave the daily database backup alone: neither install nor
 #                    refresh it, and do not report on the dumps it has taken.
+#   --no-compose-up  Do NOT apply the compose files to the stack. By default the
+#                    run ends with `docker compose up -d` over EVERY service, so
+#                    the bahmni-docker-ls update from step 2 actually takes
+#                    effect. That is a reconcile, not a restart: a service whose
+#                    definition did not change is left running untouched. With
+#                    this flag the stack keeps running whatever its containers
+#                    were created from, and you apply it yourself later.
+#   --pull-images    Add `--pull always` to that command, so a release that
+#                    moves an image tag in place is picked up too. Off by
+#                    default because it re-downloads over the site's link.
 #   --no-recreate    Do NOT recreate the EMR service at the end. Nothing then
 #                    touches a running container, but the refreshed config,
 #                    omods and forms are not loaded until it is restarted.
@@ -153,6 +176,8 @@
 #   EREGISTER_CATCHUP_DECODE_ONLY=1   same as --decode
 #   EREGISTER_CATCHUP_STACK_REPO=0    same as --no-stack
 #   EREGISTER_CATCHUP_DB_CHECK=0      skip the concept-count query
+#   EREGISTER_CATCHUP_COMPOSE_UP=0    same as --no-compose-up
+#   EREGISTER_CATCHUP_COMPOSE_PULL=1  same as --pull-images
 #   EREGISTER_CATCHUP_RECREATE=0      same as --no-recreate
 #   EREGISTER_IMPORT_REPORTING=0      same as --no-reporting
 #   EREGISTER_IDGEN_RETIRE=0          same as --no-idgen
@@ -560,6 +585,12 @@ parse_catchup_args() {
       # because "--decode" next to "--no-decode" reads like a toggle, and this
       # is not one — it changes what the whole run does.
       --decode|--decode-only) CATCHUP_DECODE_ONLY="1" ;;
+      # Leaves the stack running whatever its containers were created from,
+      # even when bahmni-docker-ls moved this run.
+      --no-compose-up) CATCHUP_COMPOSE_UP="0" ;;
+      # Re-pull images before applying the compose files, for a release that
+      # moves a tag in place rather than naming a new one.
+      --pull-images)  CATCHUP_COMPOSE_PULL="1" ;;
       --no-db-backup) DB_BACKUP="0" ;;
       --no-recreate)  CATCHUP_RECREATE_EMR="0" ;;
       --force-repos)  CATCHUP_FORCE_REPOS="1" ;;
@@ -615,14 +646,16 @@ banner_catchup() {
     return 0
   fi
   info "eRegister v1 catch-up — reconciling this site with the current release."
-  info "Read-mostly, with five exceptions: the form JSON in the '${EMR_SERVICE}' container is"
+  info "Read-mostly, with six exceptions: the form JSON in the '${EMR_SERVICE}' container is"
   info "decoded (--no-decode skips it), the forms named like '${FORM_RETIRE_NAME_LIKE}' are retired in"
   info "'${DB_NAME}' just before the new ones are imported (reversibly; --no-retire-forms"
   info "skips it), the report definitions are imported into that same database"
   info "(backed up first; --no-reporting skips it), identifier source ${IDGEN_RETIRE_ID} is"
-  info "retired there too (reversibly; --no-idgen skips it), and the"
-  info "'${EMR_SERVICE}' service is recreated at the end so the refreshed config, omods and"
-  info "forms are loaded (--no-recreate skips it)."
+  info "retired there too (reversibly; --no-idgen skips it), the compose files are"
+  info "applied to the whole stack with '${DOCKER_COMPOSE:-docker compose} up -d' so the bahmni-docker-ls"
+  info "update takes effect (--no-compose-up skips it), and the '${EMR_SERVICE}' service is"
+  info "recreated at the end so the refreshed config, omods and forms are loaded"
+  info "(--no-recreate skips it). The last two are confirmed before they run."
 }
 
 main "$@"

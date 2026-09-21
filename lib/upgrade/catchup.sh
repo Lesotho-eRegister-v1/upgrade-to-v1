@@ -84,6 +84,7 @@
 CATCHUP_ROWS=()
 CATCHUP_GAPS=0
 CATCHUP_EMR_RECREATED=0   # set by catchup_recreate_emr, read by the report
+CATCHUP_STACK_APPLIED=0   # containers recreated by catchup_stack_up; same
 
 _cu_row() {  # _cu_row <status> <category> <name> <detail>
   CATCHUP_ROWS+=("$1|$2|$3|$4")
@@ -222,7 +223,7 @@ _cu_update_repo() { # _cu_update_repo <name> <url> <dir> <ref> <class>
   if [ "$before" = "$after" ]; then
     _cu_row OK repo "$name" "current (${branch} @ ${after})${note}"
   elif [ "$class" = "stack" ]; then
-    _cu_row FIXED repo "$name" "${branch} ${before} -> ${after}${note} — needs 'docker compose up -d' to take effect"
+    _cu_row FIXED repo "$name" "${branch} ${before} -> ${after}${note} — applied by the 'compose up' row below"
   else
     _cu_row FIXED repo "$name" "${branch} ${before} -> ${after}${note}"
   fi
@@ -883,6 +884,112 @@ catchup_services() {
 }
 
 # -----------------------------------------------------------------------------
+# catchup_stack_up — bring the WHOLE stack in line with the compose files:
+#
+#     docker compose up -d        (every service, in RESTORE_DIR)
+#
+# WHY IT EXISTS, SEPARATELY FROM THE EMR RELOAD BELOW
+#   catchup_repos fast-forwards bahmni-docker-ls, which IS the compose files
+#   this command reads. Pulling them changes what the stack is supposed to be;
+#   nothing applies that until somebody runs `up -d`. Before this step the repo
+#   row said so and left it to the operator — which meant a site could sit for
+#   months on compose files it had already pulled.
+#
+#   The EMR reload that follows is NOT a substitute. It names one service, so a
+#   new service, a changed image tag, a new port or a changed environment block
+#   anywhere else in the file is invisible to it.
+#
+# WHAT IT ACTUALLY TOUCHES
+#   `up -d` is a reconcile, not a restart: a service whose resolved config is
+#   unchanged is left running exactly as it is. It recreates only the containers
+#   whose definition moved, and starts anything that is missing or stopped. So
+#   on a site whose bahmni-docker-ls did not move, this is a no-op.
+#
+#   That does include the database service, if the compose file changed it.
+#   Named volumes — where the patient data lives — are never touched by `up -d`,
+#   so this is not a data-loss operation, but it can mean a few seconds of
+#   database downtime. Hence the confirm, and --no-compose-up.
+#
+# IMAGES
+#   By default this deploys the images the host already has, pulling only one it
+#   has never seen. A release that moves a tag in place (`:latest` and friends)
+#   therefore needs --pull-images / EREGISTER_CATCHUP_COMPOSE_PULL=1, which adds
+#   `--pull always`. It is off by default because it turns a fast local
+#   reconcile into a download over whatever link the site has.
+#
+# ORDER
+#   Before catchup_recreate_emr, so the EMR is force-recreated from the compose
+#   definition this step has just applied rather than the one before it.
+# -----------------------------------------------------------------------------
+catchup_stack_up() {
+  step "Applying the compose files (docker compose up -d)"
+
+  if [ "${CATCHUP_COMPOSE_UP:-1}" != "1" ]; then
+    _cu_row SKIP stack "compose up" "not applied (--no-compose-up)"
+    return 0
+  fi
+  if [ ! -d "$RESTORE_DIR" ]; then
+    _cu_row GAP stack "compose up" "no stack directory at ${RESTORE_DIR}"
+    return 0
+  fi
+  if ! _concepts_resolve_compose >/dev/null 2>&1 || [ -z "${DOCKER_COMPOSE:-}" ]; then
+    _cu_row GAP stack "compose up" "docker compose not available on this host"
+    return 0
+  fi
+
+  local pull=() pull_note=""
+  if [ "${CATCHUP_COMPOSE_PULL:-0}" = "1" ]; then
+    pull=(--pull always)
+    pull_note=" --pull always"
+  fi
+
+  warn "This applies ${RESTORE_DIR}'s compose files to EVERY service."
+  warn "A service whose definition did not change is left running untouched;"
+  warn "one whose definition DID change is recreated, and that includes"
+  warn "'${DB_SERVICE}' if this release changed it. Named volumes — the patient"
+  warn "data — are not touched, but expect a short outage on anything recreated."
+  [ -n "$pull_note" ] && warn "Images will be re-pulled first (--pull-images)."
+  if ! confirm "Run '${DOCKER_COMPOSE} up -d${pull_note}' on the whole stack now?" \
+               "leave the stack as it is"; then
+    _cu_row SKIP stack "compose up" "declined — run it yourself: cd ${RESTORE_DIR} && ${DOCKER_COMPOSE} up -d"
+    return 0
+  fi
+
+  # Container ids before and after, rather than parsing compose's progress
+  # output: the wording of those lines is a UI detail that changes between
+  # compose releases, while an id that is gone is unambiguously a container that
+  # was replaced. `-a` so a service that was stopped and is now running counts.
+  local before after replaced=0
+  before="$( cd "$RESTORE_DIR" && as_root $DOCKER_COMPOSE ps -a -q 2>/dev/null | sort )" || before=""
+
+  info "Running: ${DOCKER_COMPOSE} up -d${pull_note}  (in ${RESTORE_DIR})"
+  if ! ( cd "$RESTORE_DIR" && as_root $DOCKER_COMPOSE up -d ${pull[@]+"${pull[@]}"} ); then
+    _cu_row GAP stack "compose up" "'${DOCKER_COMPOSE} up -d' FAILED — check '${DOCKER_COMPOSE} ps' and the service logs"
+    error "Could not apply the compose files in ${RESTORE_DIR}."
+    return 1
+  fi
+
+  after="$( cd "$RESTORE_DIR" && as_root $DOCKER_COMPOSE ps -a -q 2>/dev/null | sort )" || after=""
+  # Ids in 'after' that were not in 'before' are containers this run created.
+  # `|| true`: grep -c exits 1 on no matches, and "nothing changed" is the
+  # normal, good outcome here.
+  if [ -n "$after" ]; then
+    replaced="$( comm -13 <(printf '%s\n' "$before") <(printf '%s\n' "$after") \
+                 | grep -c . || true )"
+  fi
+
+  if [ "${replaced:-0}" -eq 0 ]; then
+    _cu_row OK stack "compose up" "every service already matched the compose files"
+    success "The stack already matched ${RESTORE_DIR}'s compose files; nothing was recreated."
+  else
+    _cu_row FIXED stack "compose up" "${replaced} container(s) created or recreated from ${RESTORE_DIR}"
+    success "Applied the compose files: ${replaced} container(s) created or recreated."
+    CATCHUP_STACK_APPLIED="${replaced}"
+  fi
+  return 0
+}
+
+# -----------------------------------------------------------------------------
 # catchup_recreate_emr — the LAST job: recreate the EMR service so everything
 # refreshed above is actually picked up.
 #
@@ -998,13 +1105,20 @@ EOF
   fi
 
   local touched="Nothing here stopped or restarted a container."
-  [ "$CATCHUP_EMR_RECREATED" = "1" ] && \
+  if [ "$CATCHUP_EMR_RECREATED" = "1" ] && [ "${CATCHUP_STACK_APPLIED:-0}" != "0" ]; then
+    touched="This run applied the compose files (${CATCHUP_STACK_APPLIED} container(s) recreated) and reloaded '${EMR_SERVICE}'."
+  elif [ "$CATCHUP_EMR_RECREATED" = "1" ]; then
     touched="Apart from the '${EMR_SERVICE}' reload, nothing here stopped or restarted a container."
+  elif [ "${CATCHUP_STACK_APPLIED:-0}" != "0" ]; then
+    touched="This run applied the compose files (${CATCHUP_STACK_APPLIED} container(s) recreated); '${EMR_SERVICE}' was not reloaded."
+  fi
 
   cat >&2 <<EOF
 
-  ${touched} If a repo row says a stack
-  update needs it, apply that during a maintenance window:
+  ${touched}
+  The compose files in ${RESTORE_DIR} are applied
+  to the whole stack by this script (--no-compose-up skips it, --pull-images
+  re-pulls images first). To do it by hand:
       cd ${RESTORE_DIR} && ${DOCKER_COMPOSE:-docker compose} up -d
 
   Concept dictionary — handled by its own daily job (${CONCEPT_IMPORT_CRON}):
@@ -1093,6 +1207,9 @@ catch_up() {
   # `|| true` because catch-up.sh runs under `set -e`: this is the only step
   # that returns non-zero, and losing the report over it would be the worst
   # possible moment to lose the report. The failure is already a GAP row.
+  # The compose files bahmni-docker-ls just delivered, applied to every service.
+  # `|| true` for the same reason as the line below it.
+  catchup_stack_up || true
   catchup_recreate_emr || true   # last job: the EMR picks up everything above
   catchup_report
   [ "$CATCHUP_GAPS" -eq 0 ]

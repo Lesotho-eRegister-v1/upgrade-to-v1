@@ -248,6 +248,20 @@ CATCHUP_STACK_REPO="${EREGISTER_CATCHUP_STACK_REPO:-1}"
 CATCHUP_DB_CHECK="${EREGISTER_CATCHUP_DB_CHECK:-1}"
 # Seconds each HTTP health probe may take before it is called unreachable.
 CATCHUP_HTTP_TIMEOUT="${EREGISTER_CATCHUP_HTTP_TIMEOUT:-15}"
+# Second-to-last job of a catch-up run: apply the compose files to the WHOLE
+# stack —
+#   docker compose up -d        (in RESTORE_DIR)
+# catchup_repos has just fast-forwarded bahmni-docker-ls, which IS those compose
+# files; without this nothing applies them, and a site could sit indefinitely on
+# files it had already pulled. `up -d` is a reconcile, not a restart: a service
+# whose resolved definition did not change is left running untouched, so on a
+# site whose stack repo did not move this is a no-op. Named volumes (the patient
+# data) are never touched. 0 (or --no-compose-up) skips it.
+CATCHUP_COMPOSE_UP="${EREGISTER_CATCHUP_COMPOSE_UP:-1}"
+# Add `--pull always` to that command, so a release that moves an image tag in
+# place is picked up too. Off by default: it turns a fast local reconcile into a
+# download over whatever link the site has. 1 (or --pull-images) enables it.
+CATCHUP_COMPOSE_PULL="${EREGISTER_CATCHUP_COMPOSE_PULL:-0}"
 # Final job of a catch-up run: recreate the EMR service so it picks up the
 # config, omods and forms that were just refreshed —
 #   docker compose up -d --force-recreate --renew-anon-volumes <EMR_SERVICE>
