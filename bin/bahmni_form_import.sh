@@ -331,15 +331,20 @@ api_post_nobody() { # api_post_nobody <path-including-query>
 # The name is matched exactly, because `q=` is a substring search and
 # "ANC Intake" would otherwise also match "ANC Intake (Nurse)".
 #
-# NEWEST_FORM_ERR is set to the reason when the lookup could not be performed at
-# all, so the caller can say "the search failed" rather than the much more
-# alarming — and quite different — "the server does not have this form".
+# The reason a lookup could not be performed at all goes to a FILE, read back
+# with last_form_err — exactly like last_code above, and for the same reason:
+# this function is called inside $( ), which is a subshell, so a plain variable
+# assignment would not survive. The caller needs it to say "the search failed"
+# rather than the much more alarming — and quite different — "the server does
+# not have this form".
 #
 # A second argument asks for retired forms too: the default search hides them,
 # which is exactly why a retired form reads as "missing" without it.
+last_form_err() { cat "$WORK/formerr" 2>/dev/null || true; }
+
 newest_form() { # newest_form <name> [include-retired]
   local name="$1" all="${2:-}" body code rep
-  NEWEST_FORM_ERR=""
+  : > "$WORK/formerr"
 
   # custom reps are cheap but a server that rejects one answers 400, not 200.
   # Fall back to the full representation rather than reporting the form absent.
@@ -356,7 +361,7 @@ newest_form() { # newest_form <name> [include-retired]
     [[ "$code" == "200" ]] && break
   done
   if [[ "$code" != "200" ]]; then
-    NEWEST_FORM_ERR="form search returned HTTP ${code}"
+    printf 'form search returned HTTP %s' "$code" > "$WORK/formerr"
     return 1
   fi
 
@@ -382,11 +387,11 @@ form_state() { # form_state <name>
   local name="$1" row
   FS_FOUND=0; FS_UUID=""; FS_VERSION=""; FS_PUB=0; FS_RETIRED=0; FS_ERR=""
 
-  row="$(newest_form "$name")" || { FS_ERR="$NEWEST_FORM_ERR"; return 1; }
+  row="$(newest_form "$name")" || { FS_ERR="$(last_form_err)"; return 1; }
   if [[ -z "$row" ]]; then
     # Not in the default listing. That is "absent" OR "retired" — and the two
     # call for opposite responses, so ask again rather than guess.
-    row="$(newest_form "$name" includeAll)" || { FS_ERR="$NEWEST_FORM_ERR"; return 1; }
+    row="$(newest_form "$name" includeAll)" || { FS_ERR="$(last_form_err)"; return 1; }
     [[ -z "$row" ]] && return 0        # genuinely not there
   fi
 

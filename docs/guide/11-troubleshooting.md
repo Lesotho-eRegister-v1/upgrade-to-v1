@@ -57,10 +57,10 @@ Do **not** `chown -R` the clones as a fix. The scripts run as root and as the
 operator at different times; the ownership relaxation is per-invocation and
 deliberate.
 
-## 11.3 A repo row says `SKIP … uncommitted local changes`
+## 11.3 A repo row says `SKIP … uncommitted changes to tracked files`
 
 ```
-  — SKIP  repo  standard-config-ls  uncommitted local changes — left untouched; --force-repos to reset it onto Bokang-changes
+  — SKIP  repo  standard-config-ls  uncommitted changes to tracked files — left untouched; --force-repos to reset it onto Bokang-changes
 ```
 
 This is working as designed. Sites hand-edit config, and silently discarding
@@ -80,6 +80,10 @@ sudo ./catch-up.sh --force-repos
 
 The same row appears for a detached HEAD and for a repo on a different branch
 than the release pins. The detail text says which.
+
+Untracked files do **not** trigger this — only modifications to tracked files
+do. If a clone is full of untracked junk, see
+[§11.7](11-troubleshooting.md#117-parse-error-skipped-a-form-the-emr-itself-wrote).
 
 ## 11.4 `openmrsdb:openmrs is not accepting connections right now`
 
@@ -134,7 +138,9 @@ If publishing itself is failing, the importer says which endpoint refused it:
 | `publish endpoint answered HTTP 404 — trying the core form resource` | `bahmnicore` is older than the `bahmniie` publish endpoint, or the module is absent. The fallback usually still works |
 | `ERROR publishing: bahmniie said 404/405 and /form/<uuid> said HTTP 403` | The account lacks the privilege to manage forms. Use an account with form-management rights |
 | `ERROR: publish returned OK but '<name>' is still unpublished` | The endpoint accepted the call but nothing changed — check the OpenMRS log |
-| `WARNING: cannot publish '<name>' — the server does not list it` | The form name in the JSON export does not match anything on the server |
+| `WARNING: cannot publish '<name>' — no form of that name on the server` | The form name in the JSON export does not match anything on the server |
+| `WARNING: cannot publish '<name>' — form search returned HTTP 500` | The lookup itself failed; this says nothing about whether the form exists |
+| `newest version (N) is RETIRED — not publishing it` | Correct refusal — the run redeploys it as a new version instead |
 
 Run with `-v` to see the endpoint fallback decisions.
 
@@ -142,7 +148,53 @@ If a form keeps coming *back* published after you unpublish it by hand, that is
 the re-assertion working as designed — see
 [§4.5](04-forms.md#45-publishing). Use `--no-publish`.
 
-## 11.7 Forms were retired but never came back
+## 11.7 `parse error` / `skipped: a form the EMR itself wrote`
+
+The forms folder is a git clone of Form Builder **exports**. The EMR separately
+writes one `<form-uuid>.json` per *deployed* form. When its `clinical_forms`
+directory is bind-mounted onto that clone, the two mix:
+
+```
+=== 13ff9c8e-d4c1-4be0-a102-7832fee80054.json
+  skipped: a form the EMR itself wrote (no formJson wrapper) — not an export
+```
+
+Those files are skipped, not failed — but they cause a second, worse problem:
+
+```
+SKIP  refresh (/var/lib/v1/clinical-obs-forms has uncommitted changes to tracked files)
+```
+
+An untracked file no longer blocks the refresh (`git reset --hard` cannot delete
+one, so it is not work to protect). If you still see that line, something has
+modified a **tracked** file:
+
+```bash
+sudo git -c safe.directory='*' -C /var/lib/v1/clinical-obs-forms status
+sudo git -c safe.directory='*' -C /var/lib/v1/clinical-obs-forms diff
+```
+
+### Find and fix the mount
+
+```bash
+cd /var/lib/v1/bahmni-docker-ls/bahmni-standard
+sudo docker compose config | grep -B2 -A2 clinical_forms
+```
+
+If the host path is the `clinical-obs-forms` clone, point one of the two
+somewhere else — the EMR keeps its own copy inside the container, so the clone
+does not need to be the mount target.
+
+### Clean up what is already there
+
+```bash
+sudo git -c safe.directory='*' -C /var/lib/v1/clinical-obs-forms clean -n '*.json'   # list
+sudo git -c safe.directory='*' -C /var/lib/v1/clinical-obs-forms clean -f  '*.json'  # delete
+```
+
+Only untracked files are removed; the real exports are tracked and untouched.
+
+## 11.8 Forms were retired but never came back
 
 The retirement clears the recorded sha256 so the importer redeploys them. If
 that could not happen you would have seen:
@@ -163,7 +215,7 @@ WHERE name LIKE '%2026%' ORDER BY name, version DESC;
 You should see a new, un-retired version above the retired ones. If you need the
 old set back immediately, see [§10.8](10-runbook.md#108-undo-a-form-retirement).
 
-## 11.8 The decode says `still escaped after 5 pass(es)`
+## 11.9 The decode says `still escaped after 5 pass(es)`
 
 The escaping nests deeper than the default cap:
 
@@ -184,7 +236,7 @@ cd /var/lib/v1/bahmni-docker-ls/bahmni-standard
 sudo docker compose exec openmrs sh -c 'ls -d /home/bahmni/* 2>/dev/null'
 ```
 
-## 11.9 A nightly job is not producing files
+## 11.10 A nightly job is not producing files
 
 ```
   ✔ OK   cron    eregister-db-backup  systemd timer active (next: Mon 01:30)
@@ -212,7 +264,7 @@ ls -l /var/lib/v1/db-backups/*.part
 sudo rm /var/lib/v1/db-backups/*.part   # then re-run the job
 ```
 
-## 11.10 Changes were pulled but the site does not show them
+## 11.11 Changes were pulled but the site does not show them
 
 Pulling a repo changes files on disk. It does not deploy anything. Which step is
 missing depends on what changed:
@@ -233,7 +285,7 @@ cd /var/lib/v1/bahmni-docker-ls/bahmni-standard
 sudo docker compose up -d --force-recreate --renew-anon-volumes openmrs
 ```
 
-## 11.11 The upgrade failed part-way
+## 11.12 The upgrade failed part-way
 
 If the old stack had already been frozen, rollback ran automatically:
 
@@ -252,7 +304,7 @@ cd ~/bahmni_docker && sudo docker compose start
 Then read the error above the rollback lines — it names the file and line that
 failed.
 
-## 11.12 `install.sh` says "already installed" but work is missing
+## 11.13 `install.sh` says "already installed" but work is missing
 
 ```bash
 cat /var/lib/v1/.eregister-upgrade-complete
@@ -263,7 +315,7 @@ missing — a scheduled job, the forms, the report definitions — that is what
 `catch-up.sh` is for. It is almost never right to re-run `install.sh` with
 `--force`, because that reloads the database from the pre-upgrade dump.
 
-## 11.13 Getting more detail out of a run
+## 11.14 Getting more detail out of a run
 
 ```bash
 # every command, as it runs
@@ -277,7 +329,7 @@ sudo /usr/local/bin/bahmni-form-import.sh -k -v --dry-run \
 sudo journalctl -u eregister-form-import.service -n 100
 ```
 
-## 11.14 Where the logs are
+## 11.15 Where the logs are
 
 ```
 /var/log/eregister-db-backup.log

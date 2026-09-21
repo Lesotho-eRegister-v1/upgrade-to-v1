@@ -108,16 +108,21 @@ Repos are classified, and the class decides the behaviour:
 
 **A repo is reported and left completely alone — never reset — when it:**
 
-- has uncommitted local changes, or
+- has uncommitted changes to **tracked** files, or
 - sits on a detached HEAD, or
 - tracks a branch other than the one this release pins.
 
 ```
-  — SKIP  repo      standard-config-ls   uncommitted local changes — left untouched; --force-repos to reset it onto Bokang-changes
+  — SKIP  repo      standard-config-ls   uncommitted changes to tracked files — left untouched; --force-repos to reset it onto Bokang-changes
 ```
 
 Sites do hand-edit config, and silently discarding that would be the one
 destructive thing this script could plausibly do. `--force-repos` opts in.
+
+**Untracked files do not count as local changes.** `git reset --hard` never
+deletes one, so it is not work a fast-forward could destroy — and counting it as
+dirty is what leaves a clone that something else writes into (the EMR's form
+output, a stray log) frozen at its deployed commit for ever.
 
 A clone pointing at a different remote than the release configures is flagged in
 the row, and re-pointed **only** once it is otherwise on-release — re-pointing a

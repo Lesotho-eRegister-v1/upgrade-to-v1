@@ -145,6 +145,33 @@ replaces are still being offered, and nothing else on the site will retire them.
 
 ## 4.4 The import
 
+### What counts as a form to import
+
+The folder is scanned for `*.json`, but only **Form Builder exports** are
+imported — a file with a top-level `formJson` key. Anything else is skipped and
+reported separately, not counted as a failure:
+
+```
+=== 13ff9c8e-d4c1-4be0-a102-7832fee80054.json
+  skipped: a form the EMR itself wrote (no formJson wrapper) — not an export
+
+=== notes.json
+  skipped: not a Bahmni form export (no formJson key)
+
+imported 8/8 form(s), 0 unchanged, 8 published, 0 failed
+ignored 34 file(s) in the folder that are not form exports
+```
+
+The denominator is the number of **exports**, not the number of files. Folding
+non-exports in turned "8 forms, all fine" into the alarming "imported 0/76", and
+made the run exit non-zero over files that were never meant to be imported.
+
+> [!WARNING]
+> `<form-uuid>.json` files in the forms folder are a problem to fix, not to live
+> with. The EMR writes one per deployed form, and if its `clinical_forms`
+> directory is bind-mounted onto the `clinical-obs-forms` clone they land in a
+> git checkout. See [§11.7](11-troubleshooting.md#117-parse-error-skipped-a-form-the-emr-itself-wrote).
+
 ### Change detection
 
 The importer keys its state file on **server URL + form name** and stores a
@@ -176,6 +203,30 @@ every run.
 
 Keying on the URL as well as the name keeps a dev run from convincing a later
 prod run that a form is already up to date.
+
+### Unchanged does not mean deployed
+
+Before skipping a form whose file has not changed, the importer asks the server
+about it. Two states force a redeploy even though the export is byte-identical:
+
+| State on the server | Why it must redeploy |
+|---|---|
+| Newest version is **retired** | Exactly what the release retirement does to the outgoing set. Skip, and the site is left with no live copy of a form whose file will never change again |
+| The form is **missing** | Restored database, hand-deleted form, or a state file carried over from another server |
+
+```
+=== HIV Follow Up 2026_1.json
+  unchanged since version 3, but its newest version (3) is retired — redeploying
+  last version 3 (state 3, server 0) — deploying 4
+```
+
+This is the safety net under the retire step's state-file edit (§4.3): if that
+edit could not be made, the site still converges on the next run.
+
+Retired forms are invisible to the default REST search, so the lookup asks a
+second time with `includeAll=true` rather than reading "not listed" as "absent".
+A form that is genuinely retired is **not** published — that would put a form
+nobody can reach back on the published list.
 
 ### Versioning
 
