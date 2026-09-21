@@ -482,23 +482,58 @@ ensure_published() { # ensure_published <name> [known-uuid]
   return 0
 }
 
-concept_uuid() { # concept_uuid <name> -> uuid on stdout, empty when not found
-  local name="$1" attempt body code
-  for attempt in 1 2 3 4; do
-    body="$(api_get "$CONCEPT_URL" --get \
-      --data-urlencode "q=$name" \
-      --data-urlencode "source=byFullySpecifiedName" \
-      --data-urlencode "v=custom:(uuid,name:(name))")"
+# concept_query <name> <jq-filter> <curl args...> -> uuid on stdout
+#   0 = answered: the uuid, or empty when the server has no match
+#   2 = no usable answer; the reason is in $WORK/lookup_err
+# The filter runs over .results with the concept name bound to $n. Only a 200
+# whose body is JSON with a results array counts as an answer. A proxy error
+# page, a dropped session or a timeout used to come back as an empty uuid, so
+# an EMR that was merely busy produced "Concept name not found" for concepts
+# that exist — and a different set of them on every run.
+concept_query() {
+  local name="$1" filter="$2"; shift 2
+  local attempt body code
+  for attempt in 1 2 3 4 5 6; do
+    body="$(api_get "$CONCEPT_URL" --get --max-time 60 "$@")"
     code="$(last_code)"
     if [[ "$code" == "200" ]]; then
-      jq -r --arg n "$name" \
-        'first(.results[]? | select(.name.name == $n) | .uuid) // ""' <<<"$body" 2>/dev/null
-      return 0
+      if jq -e '.results | type == "array"' <<<"$body" >/dev/null 2>&1; then
+        jq -r --arg n "$name" ".results | $filter" <<<"$body"
+        return 0
+      fi
+      code="200 (response was not concept JSON)"
     fi
-    [[ "$code" =~ ^4 ]] && { echo ""; return 0; }
-    sleep "$(awk -v a="$attempt" 'BEGIN{print 0.5 * 2 ^ (a - 1)}')"
+    printf 'HTTP %s' "$code" > "$WORK/lookup_err"
+    [[ "$code" == "401" || "$code" == "403" ]] && return 2
+    (( attempt < 6 )) && sleep "$(awk -v a="$attempt" 'BEGIN{print 2 ^ (a - 1)}')"
   done
-  echo ""
+  return 2
+}
+
+# concept_uuid <name> -> uuid on stdout
+#   0 = found, 1 = the server has no such concept, 2 = lookup failed ($WORK/lookup_err)
+# First the query the Implementer Interface sends (q= search, exact match on the
+# returned name). When that finds nothing, ask Bahmni's byFullySpecifiedName
+# handler, which matches the name exactly in the database: q= goes through the
+# search index and returns one page at the default limit, so a concept that
+# exists can be absent from it — while the index is rebuilt after a restart, or
+# when a short name like "Negative" matches more concepts than fit on a page.
+concept_uuid() {
+  local name="$1" uuid
+  uuid="$(concept_query "$name" \
+      '[.[] | select(.name.name == $n) | .uuid][0] // ""' \
+      --data-urlencode "q=$name" \
+      --data-urlencode "source=byFullySpecifiedName" \
+      --data-urlencode "v=custom:(uuid,name:(name))")" || return 2
+  if [[ -z "$uuid" ]]; then
+    uuid="$(concept_query "$name" \
+        '[.[] | .uuid][0] // ""' \
+        --data-urlencode "s=byFullySpecifiedName" \
+        --data-urlencode "name=$name" \
+        --data-urlencode "v=custom:(uuid)")" || return 2
+  fi
+  [[ -n "$uuid" ]] || return 1
+  printf '%s\n' "$uuid"
 }
 
 # ------------------------------------------------------------------ state
@@ -767,13 +802,17 @@ for FILE in "${FILES[@]}"; do
     while IFS= read -r NAME; do
       [[ -z "$NAME" ]] && continue
       n=$((n + 1))
-      UUID="$(concept_uuid "$NAME")"
-      if [[ -n "$UUID" ]]; then
+      rc=0; UUID="$(concept_uuid "$NAME")" || rc=$?
+      if [[ $rc -eq 0 ]]; then
         jq -cn --arg k "$NAME" --arg v "$UUID" '{($k): $v}' >> "$WORK/map.jsonl"
         [[ $VERBOSE -eq 1 ]] && printf '    %-60.60s %s\n' "$NAME" "$UUID"
-      else
+      elif [[ $rc -eq 1 ]]; then
         echo "Concept name not found $NAME" >> "$WORK/missing"
         [[ $VERBOSE -eq 1 ]] && printf '    %-60.60s NOT FOUND\n' "$NAME"
+      else
+        why="$(cat "$WORK/lookup_err" 2>/dev/null || echo 'no response')"
+        echo "Concept lookup failed ($why) $NAME" >> "$WORK/missing"
+        [[ $VERBOSE -eq 1 ]] && printf '    %-60.60s LOOKUP FAILED (%s)\n' "$NAME" "$why"
       fi
       if [[ $VERBOSE -eq 0 ]] && (( n % 25 == 0 )) && [[ -t 1 ]]; then
         printf '\r    resolving %d/%d' "$n" "$UNIQUE"
@@ -785,7 +824,10 @@ for FILE in "${FILES[@]}"; do
     if [[ -s "$WORK/missing" ]]; then
       ERR_FILE="$(basename "${FILE%.json}").importErrors.txt"
       sort -u "$WORK/missing" > "$ERR_FILE"
-      echo "  $(wc -l < "$ERR_FILE" | tr -d ' ') concepts missing — see $ERR_FILE"
+      n_missing="$(grep -c '^Concept name not found' "$ERR_FILE")"
+      n_failed="$(grep -c '^Concept lookup failed' "$ERR_FILE")"
+      echo "  ${n_missing} concepts missing, ${n_failed} lookups failed — see $ERR_FILE"
+      (( n_failed > 0 )) && echo "  (failed lookups are server/proxy errors, not missing concepts — re-run once the EMR is responding)"
       EXIT_CODE=1; FAILED=$((FAILED + 1)); continue
     fi
 
