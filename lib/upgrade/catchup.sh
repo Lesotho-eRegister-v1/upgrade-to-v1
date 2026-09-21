@@ -85,6 +85,12 @@ CATCHUP_ROWS=()
 CATCHUP_GAPS=0
 CATCHUP_EMR_RECREATED=0   # set by catchup_recreate_emr, read by the report
 CATCHUP_STACK_APPLIED=0   # containers recreated by catchup_stack_up; same
+# How the clinical-obs-forms clone fared in catchup_repos. The form import reads
+# files out of that directory, so it has to be able to say whether what it is
+# about to deploy is actually current — see _cu_forms_clone_state.
+CATCHUP_FORMS_REPO_STATUS=""
+CATCHUP_FORMS_REPO_DETAIL=""
+FORMS_CLONE_STALE=0       # set by _cu_forms_clone_state, read by the import row
 
 _cu_row() {  # _cu_row <status> <category> <name> <detail>
   CATCHUP_ROWS+=("$1|$2|$3|$4")
@@ -235,10 +241,23 @@ _cu_update_repo() { # _cu_update_repo <name> <url> <dir> <ref> <class>
 
 catchup_repos() {
   step "Dependency repos"
-  local line name url dir ref class
+  local line name url dir ref class last
   while IFS= read -r line; do
     IFS='|' read -r name url dir ref class <<<"$line"
     _cu_update_repo "$name" "$url" "$dir" "$ref" "$class"
+
+    # Remember how the FORMS clone went. The import step further down reads its
+    # files, and there are ten ways between here and there for that directory to
+    # be left at an old commit — six in the branches above, four more in the
+    # runner's own refresh. None of them reached the import, so a run could
+    # deploy a months-old release and report a clean import while doing it.
+    # Matching on the directory rather than the name keeps this correct when
+    # EREGISTER_FORMS_DIR points somewhere else.
+    if [ "$dir" = "$FORMS_DIR" ] && [ "${#CATCHUP_ROWS[@]}" -gt 0 ]; then
+      last="${CATCHUP_ROWS[$(( ${#CATCHUP_ROWS[@]} - 1 ))]}"
+      CATCHUP_FORMS_REPO_STATUS="${last%%|*}"
+      CATCHUP_FORMS_REPO_DETAIL="${last##*|}"
+    fi
   done < <(catchup_expected_repos)
 }
 
@@ -527,6 +546,9 @@ _cu_forms_import() {
     return 0
   fi
 
+  # What is on disk, and is it current? Ask before deploying it, not after.
+  _cu_forms_clone_state
+
   local deployed=0
   if as_root test -s "$FORM_IMPORT_STATE" && command -v jq >/dev/null 2>&1; then
     deployed="$(as_root cat "$FORM_IMPORT_STATE" 2>/dev/null | jq 'length' 2>/dev/null || echo 0)"
@@ -558,19 +580,84 @@ _cu_forms_import() {
   # follows it, and vice versa. See _forms_retire_stale in forms.sh.
   _cu_forms_retire
 
+  # A run that deployed from a clone nobody could refresh is not a clean run,
+  # however well the import itself went. Say so in the row rather than letting
+  # "imported 8/8" stand as though the site were current.
+  local stale_note=""
+  [ "${FORMS_CLONE_STALE:-0}" = "1" ] && stale_note=" — from a clone that was NOT refreshed this run"
+
   if run_form_import; then
     local summary
     summary="$(as_root grep -E 'imported [0-9]+/' "$FORM_IMPORT_LOG" 2>/dev/null | tail -1 || true)"
     # "imported 0/…" means every form was already current — that is an OK, not
     # a FIXED: nothing on the site actually changed.
-    if [[ "$summary" == *"imported 0/"* ]]; then
+    if [ "${FORMS_CLONE_STALE:-0}" = "1" ]; then
+      _cu_row GAP forms "import" "${summary:-completed}${stale_note}"
+    elif [[ "$summary" == *"imported 0/"* ]]; then
       _cu_row OK forms "import" "$summary"
     else
       _cu_row FIXED forms "import" "${summary:-completed}"
     fi
   else
-    _cu_row GAP forms "import" "run failed — see ${FORM_IMPORT_LOG}"
+    _cu_row GAP forms "import" "run failed — see ${FORM_IMPORT_LOG}${stale_note}"
   fi
+}
+
+# -----------------------------------------------------------------------------
+# _cu_forms_clone_state — say what is about to be deployed, and whether it is
+# current, BEFORE asking to import it.
+#
+# WHY THIS EXISTS
+#   The import reads JSON files off the disk. Getting current files there is
+#   somebody else's job — catchup_repos at the top of the run, and the runner's
+#   own refresh just before it imports — and BOTH of those can decline, quietly:
+#   a dirty tracked file, a detached HEAD, an off-release branch, a failed
+#   fetch, an unreadable repo. Every one of those is reported in its own row and
+#   then forgotten, so the import went ahead against whatever was on disk and
+#   reported a clean "imported N/N" while deploying a months-old release.
+#
+#   That is precisely how a site ends up frozen at one commit for weeks with
+#   nothing in the report looking wrong.
+#
+# Sets FORMS_CLONE_STALE=1 when the clone was NOT refreshed this run, so the
+# import row can carry that fact into the report instead of looking clean.
+# -----------------------------------------------------------------------------
+_cu_forms_clone_state() {
+  FORMS_CLONE_STALE=0
+
+  if [ ! -d "${FORMS_DIR}/.git" ]; then
+    warn "${FORMS_DIR} is not a git checkout — importing whatever files are in it."
+    FORMS_CLONE_STALE=1
+    return 0
+  fi
+
+  local head branch when
+  head="$(git_here -C "$FORMS_DIR" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+  branch="$(git_here -C "$FORMS_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || echo unknown)"
+  # Committer date, not author date: what matters is how old this deployment is.
+  when="$(git_here -C "$FORMS_DIR" log -1 --format=%cd --date=short 2>/dev/null || echo unknown)"
+
+  info "Importing from ${FORMS_DIR} — ${branch} @ ${head}, committed ${when}."
+
+  case "${CATCHUP_FORMS_REPO_STATUS:-}" in
+    OK)
+      info "That clone was checked at the top of this run and is current." ;;
+    FIXED)
+      success "That clone was brought up to date at the top of this run." ;;
+    SKIP|GAP)
+      FORMS_CLONE_STALE=1
+      warn "This clone was NOT refreshed this run:"
+      warn "  ${CATCHUP_FORMS_REPO_DETAIL}"
+      warn "So the forms about to be deployed are whatever ${head} holds — which"
+      warn "may be older than the release. Resolve the repo row above first if you"
+      warn "wanted the newest forms; --force-repos brings it back onto ${REF_OBS_FORMS}."
+      ;;
+    *)
+      FORMS_CLONE_STALE=1
+      warn "The state of this clone was not established this run — importing what is on disk."
+      ;;
+  esac
+  return 0
 }
 
 # -----------------------------------------------------------------------------

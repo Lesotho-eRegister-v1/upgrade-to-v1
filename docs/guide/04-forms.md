@@ -35,11 +35,48 @@ importer over the whole folder.
 ```
 _cu_forms_import
  ├─ is the runner installed and are there credentials?   → GAP if not
+ ├─ _cu_forms_clone_state   ← what is on disk, and is it current?
  ├─ "Run the form import now?"                           → SKIP if declined
  ├─ re-check the EMR password                            → GAP if rejected
  ├─ _forms_retire_stale     ← retire the outgoing set
  └─ run_form_import         ← deploy the incoming set, and publish it
 _cu_forms_decode            ← always, even if nothing was imported
+```
+
+### Is the clone current?
+
+The import reads JSON off the disk. Getting *current* JSON there is somebody
+else's job — step 1 of the catch-up run, and the runner's own refresh — and
+**both of those can decline**: a dirty tracked file, a detached HEAD, an
+off-release branch, a failed fetch, an unreadable repo.
+
+Each of those is reported in its own row and was then forgotten, so the import
+went ahead against whatever was on disk and reported a clean `imported 8/8`
+while deploying a months-old release. That is how a site stays frozen at one
+commit for weeks with nothing in the report looking wrong.
+
+So the import now says what it is about to deploy, before asking:
+
+```
+[ℹ] Importing from /var/lib/v1/clinical-obs-forms — main @ 18758c6, committed 2026-09-11.
+[✔] That clone was brought up to date at the top of this run.
+```
+
+and when it could not be refreshed:
+
+```
+[⚠] This clone was NOT refreshed this run:
+[⚠]   uncommitted changes to tracked files — left untouched; --force-repos to reset it onto main
+[⚠] So the forms about to be deployed are whatever 18758c6 holds — which
+[⚠] may be older than the release.
+```
+
+A run that deploys from an unrefreshed clone gets a **`GAP` import row**, however
+well the import itself went — `imported 8/8` must not stand as though the site
+were current:
+
+```
+  ✘ GAP  forms  import  imported 8/8 form(s) — from a clone that was NOT refreshed this run
 ```
 
 The retirement sits **inside** the import step, after the confirmation and the

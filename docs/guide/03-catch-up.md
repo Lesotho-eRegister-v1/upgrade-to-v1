@@ -162,6 +162,11 @@ This is how a site installed before the backup job existed gets one.
 Three parts, each with its own report row. Covered in full in
 [chapter 4](04-forms.md):
 
+0. **Check the clone is current** — the import reads files off the disk, and
+   step 1 above can decline to refresh them for six different reasons. The step
+   prints the commit it is about to deploy and whether it was refreshed this
+   run, and a run that deploys from an unrefreshed clone gets a `GAP` row even
+   when the import itself succeeds
 1. **Retire** the forms this release replaces (`--no-retire-forms` skips)
 2. **Import** the forms whose content changed, and **publish** them
    (`--no-forms` skips the import, `--no-publish` skips just the publishing)
