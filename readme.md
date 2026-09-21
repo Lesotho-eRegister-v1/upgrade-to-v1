@@ -42,9 +42,24 @@ Useful flags: `--no-recreate` (skip the EMR reload — then nothing touches a
 running container), `--force-repos` (bring off-release repos back, discarding
 local changes), `--no-stack` (leave `bahmni-docker-ls` alone), `--no-forms`,
 `--no-retire-forms` (import the new forms but leave the old ones live),
+`--no-publish` (leave the deployed forms in Draft),
 `--no-compose-up` (do not apply the compose files to the stack),
 `--no-db-backup` (leave the nightly database backup alone), `--install-dir DIR`. It exits `0` only when there are no gaps, so it also works
 as a monitoring check. Full detail: [Catching an early site up](#catching-an-early-site-up).
+
+## Full documentation
+
+A chapter-by-chapter guide to everything these scripts do lives in
+[`docs/guide/`](docs/guide/index.md) — architecture and on-disk layout, the
+upgrade, the catch-up reconcile, forms, concepts, report definitions, backups,
+the scheduled jobs, a complete configuration reference, an operations runbook
+and troubleshooting.
+
+The same content is built into a single PDF for offline use:
+
+```bash
+./docs/guide/build-pdf.sh      # -> docs/guide/eregister-v1-upgrade-guide.pdf
+```
 
 > [!WARNING]
 > If you need to do the upgrade process again, remember to run:
@@ -427,7 +442,17 @@ Run one by hand at any time:
 sudo /usr/local/bin/eregister-form-import.sh          # the scheduled job, now
 sudo /usr/local/bin/bahmni-form-import.sh -k --dry-run  # validate concepts only
 sudo /usr/local/bin/bahmni-form-import.sh -k --force     # re-deploy everything
+sudo /usr/local/bin/bahmni-form-import.sh -k --publish-only  # publish drafts, import nothing
 ```
+
+Each form is **published** as it is deployed. The Implementer Interface's
+"Import" button does not do this — it leaves the form in Draft, where it is not
+offered in the clinical app until someone clicks "Publish" — so the importer
+does it over the same endpoint that button uses. Publication is re-asserted on
+forms that are skipped as unchanged, which is what publishes a site whose forms
+were deployed as drafts before this existed; `--publish-only` is the fast,
+targeted version of the same thing. `--no-publish` /
+`EREGISTER_FORM_PUBLISH=0` leaves them as drafts.
 
 Set it all up — or re-install and re-schedule it — for forms alone, without the
 rest of the catch-up:
@@ -804,6 +829,7 @@ running whatever its containers were created from), `--pull-images` (re-pull
 images before applying them),
 `--no-retire-forms` (deploy the new forms without retiring the ones they
 replace — both generations are then offered),
+`--no-publish` (leave the deployed forms in Draft),
 `--no-decode` (import the forms but leave the entities in what the EMR wrote),
 `--no-idgen` (leave the identifier source in use),
 `--no-concepts` (leave the dictionary alone entirely — no DB probe, and the
@@ -821,7 +847,7 @@ for `--yes` if the credentials file is missing), `EREGISTER_UPGRADE_REPO`,
 `EREGISTER_DB_BACKUP=0`, `EREGISTER_DB_BACKUP_CRON`, `EREGISTER_DB_BACKUP_KEEP`,
 `EREGISTER_EMR_SERVICE`, `EREGISTER_CONCEPT_IMPORT=0`,
 `EREGISTER_IMPORT_REPORTING=0`, `EREGISTER_REPORTING_SQL_NAME`,
-`EREGISTER_REF_REPORTING`, `EREGISTER_FORM_RETIRE=0`,
+`EREGISTER_REF_REPORTING`, `EREGISTER_FORM_PUBLISH=0`, `EREGISTER_FORM_RETIRE=0`,
 `EREGISTER_FORM_RETIRE_NAME_LIKE`, `EREGISTER_FORM_RETIRE_REASON`,
 `EREGISTER_FORM_RETIRE_BY`, `EREGISTER_FORM_DECODE=0`,
 `EREGISTER_FORM_DECODE_DIR`, `EREGISTER_FORM_DECODE_MAX_PASSES`,

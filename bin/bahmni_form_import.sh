@@ -11,6 +11,20 @@
 #   4. save translations      POST /openmrs/ws/rest/v1/bahmniie/form/saveTranslation
 #   5. save name translations POST /openmrs/ws/rest/v1/bahmniie/form/name/saveTranslation
 #                                  (only when resources[1] exists)
+#   6. publish the form       POST /openmrs/ws/rest/v1/bahmniie/form/publish?formUuid=<uuid>
+#
+# Step 6 is the one thing the "Import" button does NOT do. In the Implementer
+# Interface, importing leaves the form in Draft — you then click "Publish"
+# separately, and until you do, the form is not offered in the clinical app.
+# Deploying dozens of forms and then clicking Publish dozens of times is exactly
+# the work this script exists to remove, so it publishes by default.
+# --no-publish leaves the forms as drafts, reproducing the button exactly.
+#
+# Publishing is RE-ASSERTED, not done once: a form that is skipped as unchanged
+# is still checked, and published if it is not. That is what fixes a site whose
+# forms were deployed before this script published anything. It also means a
+# form you deliberately unpublish by hand is published again by the next run —
+# use --no-publish on a site where that matters.
 #
 # Difference from the browser: concept lookups are de-duplicated, sequential and
 # retried instead of fired as ~1700 parallel fetches, which is what produces the
@@ -28,6 +42,10 @@
 # holds, in name order; add -r to descend into subfolders as well.
 #
 #   ./bahmni_form_import.sh -k clinical-obs-forms/    # every form in the folder
+#
+# To publish forms that are already deployed, without re-importing any of them:
+#
+#   ./bahmni_form_import.sh -k --publish-only -r clinical-obs-forms/
 #   ./bahmni_form_import.sh -k -r clinical-obs-forms/ # ...and its subfolders
 #   ./bahmni_form_import.sh -k --dry-run form.json    # validate concepts only
 #
@@ -97,6 +115,12 @@ STATE_FILE="${BAHMNI_STATE_FILE:-}"
 SKIP_VALIDATION=0
 VERBOSE=0
 RECURSIVE=0
+# Publish each form after deploying it, and re-assert publication on forms that
+# were skipped as unchanged. 0 (or --no-publish) leaves them as drafts.
+PUBLISH="${BAHMNI_PUBLISH:-1}"
+# Publish and NOTHING else: no concept resolution, no POST /form, no version
+# bump. For a site whose forms are deployed but sitting in Draft.
+PUBLISH_ONLY=0
 INPUTS=()
 
 # Folder used when the script is called with no path at all: the clinical-obs-forms
@@ -110,6 +134,7 @@ FORM_URL="/openmrs/ws/rest/v1/form"
 FORM_SAVE_URL="/openmrs/ws/rest/v1/bahmniie/form/save"
 SAVE_TRANSLATION_URL="/openmrs/ws/rest/v1/bahmniie/form/saveTranslation"
 SAVE_NAME_TRANSLATION_URL="/openmrs/ws/rest/v1/bahmniie/form/name/saveTranslation"
+PUBLISH_URL="/openmrs/ws/rest/v1/bahmniie/form/publish"
 
 # Print the header comment block, so the docs above can grow without the line
 # numbers here going stale.
@@ -130,6 +155,9 @@ while [[ $# -gt 0 ]]; do
     --skip-validation) SKIP_VALIDATION=1; shift ;;
     --state)           STATE_FILE="$2"; shift 2 ;;
     -f|--force)        FORCE=1; shift ;;
+    --publish)         PUBLISH=1; shift ;;
+    --no-publish)      PUBLISH=0; shift ;;
+    --publish-only)    PUBLISH_ONLY=1; PUBLISH=1; shift ;;
     --no-bump)         BUMP=0; shift ;;
     -v|--verbose)      VERBOSE=1; shift ;;
     -r|--recursive)    RECURSIVE=1; shift ;;
@@ -286,6 +314,106 @@ api_post() { # api_post <path> <json-file>
   printf '%s' "${out%$'\n'*}"
 }
 
+# A POST that carries its query in the URL and no body at all — which is what
+# the Publish button sends. Not api_post: that one always attaches a JSON file,
+# and an endpoint expecting no body can reject one.
+api_post_nobody() { # api_post_nobody <path-including-query>
+  local path="$1" out
+  out="$("${CURL[@]}" -w '\n%{http_code}' -X POST -H 'Content-Length: 0' \
+        "${BASE_URL}${path}" 2>/dev/null)" || out=$'\n000'
+  printf '%s' "${out##*$'\n'}" > "$WORK/code"
+  printf '%s' "${out%$'\n'*}"
+}
+
+# newest_form <name> -> "<uuid>\t<version>\t<published>" for the highest version
+# of that form on the server; empty when there is none. The name is matched
+# exactly, because `q=` is a substring search and "ANC Intake" would otherwise
+# also match "ANC Intake (Nurse)".
+newest_form() { # newest_form <name>
+  local name="$1" body
+  body="$(api_get "$FORM_URL" --get \
+    --data-urlencode "q=$name" \
+    --data-urlencode "v=custom:(uuid,name,version,published)")"
+  [[ "$(last_code)" == "200" ]] || return 1
+  jq -r --arg n "$name" '
+    [ .results[]? | select(.name == $n) ]
+    | sort_by(.version | tostring | tonumber? // 0)
+    | last
+    | if . == null then "" else
+        [ .uuid, (.version | tostring), (.published | tostring) ] | @tsv
+      end' <<<"$body" 2>/dev/null
+}
+
+# publish_form <uuid> -> 0 published, 1 could not.
+#
+# The bahmniie endpoint is what the Implementer Interface's Publish button
+# calls, so using it inherits whatever else Bahmni does on publish rather than
+# just flipping a column. Where that endpoint is missing — an older bahmnicore,
+# or a stack without the module — fall back to the core OpenMRS form resource,
+# which at least sets the flag.
+publish_form() { # publish_form <uuid>
+  local uuid="$1" code
+  api_post_nobody "${PUBLISH_URL}?formUuid=${uuid}" >/dev/null
+  code="$(last_code)"
+  case "$code" in
+    200|201) return 0 ;;
+    404|405|501)
+      [[ $VERBOSE -eq 1 ]] && echo "    publish endpoint answered HTTP $code — trying the core form resource"
+      printf '{"published": true}' > "$WORK/publish.json"
+      api_post "${FORM_URL}/${uuid}" "$WORK/publish.json" >/dev/null
+      code="$(last_code)"
+      [[ "$code" == "200" || "$code" == "201" ]] && return 0
+      echo "  ERROR publishing: bahmniie said 404/405 and /form/<uuid> said HTTP $code"
+      return 1 ;;
+    *)
+      echo "  ERROR publishing: HTTP $code"
+      return 1 ;;
+  esac
+}
+
+# ensure_published <name> [uuid] — publish the newest version of a form unless it
+# already is. Reads the state back from the server rather than trusting the POST,
+# and counts what it changed. Never fatal on its own: a form that is deployed but
+# unpublished is a smaller problem than a run that stopped half way through.
+ensure_published() { # ensure_published <name> [known-uuid]
+  local name="$1" known="${2:-}" row uuid version published
+  row="$(newest_form "$name")" || row=""
+  if [[ -z "$row" ]]; then
+    if [[ -n "$known" ]]; then
+      uuid="$known"; published="false"
+    else
+      echo "  WARNING: cannot publish '$name' — the server does not list it"
+      return 1
+    fi
+  else
+    IFS=$'\t' read -r uuid version published <<<"$row"
+  fi
+
+  if [[ "$published" == "true" ]]; then
+    [[ $VERBOSE -eq 1 ]] && echo "  already published (version ${version:-?})"
+    return 0
+  fi
+
+  if ! publish_form "$uuid"; then
+    EXIT_CODE=1
+    return 1
+  fi
+
+  # Read it back: a 200 from the endpoint is not the same as a published form.
+  row="$(newest_form "$name")" || row=""
+  if [[ -n "$row" ]]; then
+    IFS=$'\t' read -r uuid version published <<<"$row"
+    if [[ "$published" != "true" ]]; then
+      echo "  ERROR: publish returned OK but '$name' is still unpublished"
+      EXIT_CODE=1
+      return 1
+    fi
+  fi
+  echo "  published version ${version:-?}"
+  PUBLISHED=$((PUBLISHED + 1))
+  return 0
+}
+
 concept_uuid() { # concept_uuid <name> -> uuid on stdout, empty when not found
   local name="$1" attempt body code
   for attempt in 1 2 3 4; do
@@ -419,6 +547,7 @@ echo "${#FILES[@]} form file(s) to import"
 IMPORTED=0
 FAILED=0
 SKIPPED=0
+PUBLISHED=0
 
 # ------------------------------------------------------------------ per file
 
@@ -433,6 +562,25 @@ for FILE in "${FILES[@]}"; do
   fi
 
   FORM_NAME="$(jq -r '.formJson.name' "$FILE")"
+
+  # --publish-only: publish what is already deployed and move on. No concept
+  # resolution, no POST /form, no version bump — so it is seconds per form
+  # rather than minutes, and it cannot change what any form contains.
+  if [[ $PUBLISH_ONLY -eq 1 ]]; then
+    if [[ $DRY_RUN -eq 1 ]]; then
+      row="$(newest_form "$FORM_NAME")" || row=""
+      if [[ -z "$row" ]]; then
+        echo "  not on the server"
+      else
+        IFS=$'\t' read -r _u _v _p <<<"$row"
+        echo "  version ${_v} published=${_p}"
+      fi
+    else
+      ensure_published "$FORM_NAME" || true
+    fi
+    continue
+  fi
+
   jq -r '.formJson.resources[0].value' "$FILE" | jq '.' > "$WORK/value.json"
   jq '.translations // []' "$FILE" > "$WORK/translations.json"
   jq -r '.formJson.resources[1].value // empty' "$FILE" > "$WORK/nametrans.json"
@@ -452,7 +600,15 @@ for FILE in "${FILES[@]}"; do
 
   if [[ -n "$PREV_HASH" && "$PREV_HASH" == "$HASH" && $FORCE -eq 0 ]]; then
     echo "  unchanged since version $PREV_VERSION — skipping (--force to import anyway)"
-    SKIPPED=$((SKIPPED + 1)); continue
+    SKIPPED=$((SKIPPED + 1))
+    # Unchanged content does not mean published. A site whose forms were
+    # deployed before this script published anything has a folder full of
+    # drafts that no import will ever touch again, so check here too — it is
+    # one GET per form, and a POST only when there is something to fix.
+    if [[ $PUBLISH -eq 1 && $DRY_RUN -eq 0 ]]; then
+      ensure_published "$FORM_NAME" || true
+    fi
+    continue
   fi
 
   # ---------------------------------------------------------- 0b. next version
@@ -596,6 +752,15 @@ for FILE in "${FILES[@]}"; do
     echo "  name translations: HTTP $(last_code)"
   fi
 
+  # ---------------------------------------------------------- 6. publish
+  # The Import button stops at step 5 and leaves the form in Draft. Everything
+  # above is wasted until someone publishes it, so do that here rather than
+  # asking for dozens of clicks. The state is written either way: the form IS
+  # deployed, and a failed publish should not make the next run re-import it.
+  if [[ $PUBLISH -eq 1 ]]; then
+    ensure_published "$FORM_NAME" "$SAVED_UUID" || true
+  fi
+
   state_put "$KEY" "$SAVED_VERSION" "$HASH" "$SAVED_UUID" "$FILE"
   echo "  imported '$FORM_NAME' as version $SAVED_VERSION"
   IMPORTED=$((IMPORTED + 1))
@@ -604,8 +769,10 @@ done
 echo
 if [[ $DRY_RUN -eq 1 ]]; then
   echo "dry run finished: ${#FILES[@]} file(s) checked, $SKIPPED unchanged, $FAILED with problems"
+elif [[ $PUBLISH_ONLY -eq 1 ]]; then
+  echo "published $PUBLISHED/${#FILES[@]} form(s); nothing was imported (--publish-only)"
 else
-  echo "imported $IMPORTED/${#FILES[@]} form(s), $SKIPPED unchanged, $FAILED failed"
+  echo "imported $IMPORTED/${#FILES[@]} form(s), $SKIPPED unchanged, $PUBLISHED published, $FAILED failed"
   [[ $IMPORTED -gt 0 ]] && echo "state: $STATE_FILE"
 fi
 
