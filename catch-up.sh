@@ -92,8 +92,8 @@
 #   curl -fsSL --retry 8 --retry-max-time 180 <raw>/catch-up.sh | bash
 #   ./catch-up.sh [--decode]
 #   ./catch-up.sh [--yes] [--no-stack] [--no-forms] [--no-retire-forms]
-#                 [--no-decode] [--no-concepts] [--no-reporting] [--no-idgen]
-#                 [--no-db-backup] [--no-compose-up] [--pull-images]
+#                 [--no-publish] [--no-decode] [--no-concepts] [--no-reporting]
+#                 [--no-idgen] [--no-db-backup] [--no-compose-up] [--pull-images]
 #                 [--no-recreate] [--force-repos]
 #                 [--install-dir DIR] [--no-color] [--help]
 #
@@ -109,7 +109,7 @@
 #   --no-stack       Do not fast-forward bahmni-docker-ls (the compose files the
 #                    running stack reads). Everything else is still updated.
 #   --no-forms       Leave the clinical form import and its schedule alone.
-#                    Implies --no-decode and --no-retire-forms.
+#                    Implies --no-decode, --no-retire-forms and --no-publish.
 #   --no-retire-forms  Do not retire the forms the release replaces. By default,
 #                    straight before the import, every LIVE form whose name
 #                    matches EREGISTER_FORM_RETIRE_NAME_LIKE ('%2026%') is
@@ -117,6 +117,15 @@
 #                    offered the moment the incoming one lands. The rows and the
 #                    observations recorded against them are kept — it is undone
 #                    by one UPDATE, which the run prints. The import still runs.
+#   --no-publish     Leave the deployed forms in DRAFT. By default each form is
+#                    published as it is deployed — the Implementer Interface's
+#                    Import button does not do this, so without it a freshly
+#                    imported form is not offered in the clinical app at all.
+#                    Publication is RE-ASSERTED: a form skipped as unchanged is
+#                    still checked and published if it is not, which is what
+#                    fixes a site whose forms were deployed as drafts. A form
+#                    you unpublish by hand therefore comes back — use this flag
+#                    there.
 #   --no-decode      Do not decode the HTML entities in the form JSON the EMR
 #                    holds in /home/bahmni/clinical_forms. The import still runs;
 #                    only the clean-up pass over what it wrote is skipped.
@@ -163,6 +172,7 @@
 #   EREGISTER_BAHMNI_PASS       EMR password for the form import; saved when the
 #                               EMR accepts it and the stored one is missing or
 #                               rejected (otherwise you are prompted)
+#   EREGISTER_FORM_PUBLISH=0          same as --no-publish
 #   EREGISTER_FORM_RETIRE=0           same as --no-retire-forms
 #   EREGISTER_FORM_RETIRE_NAME_LIKE   SQL LIKE pattern matched against form.name
 #                                     (default '%2026%')
@@ -575,10 +585,14 @@ parse_catchup_args() {
       --no-stack)     CATCHUP_STACK_REPO="0" ;;
       # The retirement is half of the import (retire the outgoing set, deploy the
       # incoming one), so leaving the import alone leaves the retirement alone.
-      --no-forms)     IMPORT_FORMS="0"; FORM_RETIRE="0" ;;
+      --no-forms)     IMPORT_FORMS="0"; FORM_RETIRE="0"; FORM_PUBLISH="0" ;;
       # Leaves the outgoing form set live. The import still deploys the new one,
       # so both generations are offered until someone retires the old by hand.
       --no-retire-forms) FORM_RETIRE="0" ;;
+      # Leaves every deployed form in Draft, exactly as the Implementer
+      # Interface's Import button does. The step re-asserts, so this is also how
+      # you keep a hand-unpublished form unpublished.
+      --no-publish)   FORM_PUBLISH="0" ;;
       # Only the entity clean-up over what the EMR wrote; the import still runs.
       --no-decode)    FORM_DECODE="0" ;;
       # The inverse: the clean-up and nothing else. --decode-only is accepted

@@ -275,6 +275,7 @@ _forms_write_env() {
     printf 'BAHMNI_FORMS_DIR=%q\n'  "$FORMS_DIR"
     printf 'BAHMNI_STATE_FILE=%q\n' "$FORM_IMPORT_STATE"
     printf 'BAHMNI_INSECURE=%q\n'   "$FORM_IMPORT_INSECURE"
+    printf 'BAHMNI_PUBLISH=%q\n'    "${FORM_PUBLISH:-1}"
   } >"$tmp"
   # 0700 on the directory: the file inside is 0600, and a 0600 directory
   # could not be traversed to reach it.

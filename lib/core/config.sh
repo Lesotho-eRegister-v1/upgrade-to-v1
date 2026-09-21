@@ -132,6 +132,21 @@ FORM_DECODE_MAX_PASSES="${EREGISTER_FORM_DECODE_MAX_PASSES:-5}"
 # alone. See catch_up in lib/upgrade/catchup.sh.
 CATCHUP_DECODE_ONLY="${EREGISTER_CATCHUP_DECODE_ONLY:-0}"
 
+# --- Publishing the deployed forms -------------------------------------------
+# The Implementer Interface's "Import" button leaves a form in DRAFT: it is
+# deployed but not offered in the clinical app until someone clicks "Publish".
+# The importer therefore publishes each form it deploys, over the same endpoint
+# that button uses (POST /openmrs/ws/rest/v1/bahmniie/form/publish).
+#
+# It RE-ASSERTS: a form skipped as unchanged is still checked and published if
+# it is not, which is what fixes a site whose forms were deployed before this
+# was done. The flip side is that a form deliberately unpublished by hand comes
+# back published on the next run — set this to 0 (or pass --no-publish) there.
+#
+# Passed to the importer, and to the daily job, as BAHMNI_PUBLISH in
+# FORM_IMPORT_ENV. See lib/upgrade/forms.sh.
+FORM_PUBLISH="${EREGISTER_FORM_PUBLISH:-1}"
+
 # --- Retiring the forms a deployment replaces --------------------------------
 # Straight before the import, catch-up.sh marks every LIVE form whose name
 # matches FORM_RETIRE_NAME_LIKE retired in the 'openmrs' database:
