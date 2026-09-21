@@ -493,6 +493,7 @@ catchup_forms() {
   step "Clinical observation forms"
 
   if [ "$IMPORT_FORMS" != "1" ]; then
+    _cu_row SKIP forms "retire" "disabled (--no-forms)"
     _cu_row SKIP forms "import" "disabled (--no-forms)"
     _cu_row SKIP forms "decode" "disabled (--no-forms)"
     return 0
@@ -516,6 +517,7 @@ catchup_forms() {
 # -----------------------------------------------------------------------------
 _cu_forms_import() {
   if [ ! -x "$FORM_IMPORT_RUNNER" ] || ! as_root test -s "$FORM_IMPORT_ENV"; then
+    _cu_row GAP forms "retire" "not attempted — the import it belongs to cannot run"
     _cu_row GAP forms "import" "not runnable (missing runner or credentials)"
     return 0
   fi
@@ -528,6 +530,7 @@ _cu_forms_import() {
   info "Concept resolution makes this slow — minutes per changed form. Unchanged forms are skipped."
 
   if ! confirm "Run the form import now?"; then
+    _cu_row SKIP forms "retire" "not attempted — the import was declined"
     _cu_row SKIP forms "import" "declined; the daily job still runs (${FORM_IMPORT_CRON})"
     return 0
   fi
@@ -538,9 +541,17 @@ _cu_forms_import() {
   local cred_rc=0
   _forms_ensure_credentials || cred_rc=$?
   if [ "$cred_rc" = "1" ]; then
+    _cu_row GAP forms "retire" "not attempted — the import it belongs to cannot run"
     _cu_row GAP forms "import" "not run — ${FORMS_CRED_NOTE}"
     return 0
   fi
+
+  # Retire the outgoing set BEFORE deploying the incoming one, and only now:
+  # after the confirmation and the credential check, so a run that retires the
+  # old forms is a run that is actually about to deploy the new ones. It gets
+  # its own report row — a failed retirement says nothing about the import that
+  # follows it, and vice versa. See _forms_retire_stale in forms.sh.
+  _cu_forms_retire
 
   if run_form_import; then
     local summary
@@ -555,6 +566,31 @@ _cu_forms_import() {
   else
     _cu_row GAP forms "import" "run failed — see ${FORM_IMPORT_LOG}"
   fi
+}
+
+# -----------------------------------------------------------------------------
+# _cu_forms_retire — turn the status _forms_retire_stale came back with into a
+# report row.
+#
+# 'no-db' is a GAP, not a SKIP: the forms the release replaces are still live
+# and nothing else on the site will retire them, so it should show up in
+# monitoring. 'none' is an OK — the previous run already did it, or this site
+# never had a matching form.
+# -----------------------------------------------------------------------------
+_cu_forms_retire() {
+  # `|| true`: a failed UPDATE is a GAP row, not a reason to lose the report.
+  _forms_retire_stale || true
+
+  local name="name LIKE '${FORM_RETIRE_NAME_LIKE}'"
+  case "${FORMS_RETIRE_STATUS:-}" in
+    retired)  _cu_row FIXED forms "retire" "${FORMS_RETIRE_DETAIL}" ;;
+    none)     _cu_row OK    forms "retire" "${FORMS_RETIRE_DETAIL}" ;;
+    disabled) _cu_row SKIP  forms "retire" "${FORMS_RETIRE_DETAIL}" ;;
+    declined) _cu_row SKIP  forms "retire" "${FORMS_RETIRE_DETAIL}" ;;
+    no-db)    _cu_row GAP   forms "retire" "${FORMS_RETIRE_DETAIL}" ;;
+    failed)   _cu_row GAP   forms "retire" "${FORMS_RETIRE_DETAIL:-the UPDATE failed}" ;;
+    *)        _cu_row GAP   forms "retire" "${name}: the step did not report a status" ;;
+  esac
 }
 
 # -----------------------------------------------------------------------------
@@ -983,6 +1019,17 @@ EOF
       force one:   sudo rm ${REPORTING_IMPORT_STATE}, then run that again
       undo one:    the pre-import dump in ${BACKUP_DIR}/reporting-preimport-*.sql
     New reports only appear after ${EMR_SERVICE} restarts.
+
+  Clinical forms named like '${FORM_RETIRE_NAME_LIKE}' — retired in '${DB_NAME}' by this script,
+  immediately before the new ones were imported over them. Retired, not deleted:
+  the observations recorded against them are untouched. --no-retire-forms skips it:
+      see them:  SELECT form_id, name, version, retired FROM form
+                   WHERE name LIKE '${FORM_RETIRE_NAME_LIKE}' ORDER BY name, version;
+      undo it:   cd ${RESTORE_DIR} && ${DOCKER_COMPOSE:-docker compose} exec -T ${DB_SERVICE} \\
+                   mysql -u${DB_USER} -p ${DB_NAME} -e "UPDATE form SET retired = 0, \\
+                   retired_by = NULL, date_retired = NULL, retire_reason = NULL \\
+                   WHERE retire_reason = '${FORM_RETIRE_REASON}';"
+    Pass --no-retire-forms afterwards, or the next run retires them again.
 
   Identifier source ${IDGEN_RETIRE_ID} — retired in '${DB_NAME}' by this script. It matches
   only a source still in use, so re-running changes nothing; --no-idgen skips it:

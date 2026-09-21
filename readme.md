@@ -41,6 +41,7 @@ curl -fsSL --retry 8 --retry-max-time 180 https://raw.githubusercontent.com/Leso
 Useful flags: `--no-recreate` (skip the EMR reload — then nothing touches a
 running container), `--force-repos` (bring off-release repos back, discarding
 local changes), `--no-stack` (leave `bahmni-docker-ls` alone), `--no-forms`,
+`--no-retire-forms` (import the new forms but leave the old ones live),
 `--no-db-backup` (leave the nightly database backup alone), `--install-dir DIR`. It exits `0` only when there are no gaps, so it also works
 as a monitoring check. Full detail: [Catching an early site up](#catching-an-early-site-up).
 
@@ -635,7 +636,41 @@ What it does, in order:
    and installs whichever is absent, as a systemd timer or an `/etc/cron.d`
    entry. Hosts with neither get the exact cron line to add by hand. This is how
    a site installed before the backup job existed gets one.
-5. **Runs the clinical form import** — on a freshly installed site this is the
+5. **Retires the forms this release replaces, then runs the clinical form
+   import.** Straight before the import — and only once you have agreed to the
+   import, so the two never come apart — every **live** row of the `form` table
+   whose name matches `%2026%` is marked retired in the `openmrs` database:
+
+   ```sql
+   UPDATE form SET retired = 1, retired_by = 1, date_retired = NOW(),
+          retire_reason = 'deploying latest forms with the latest changes - kgatman'
+   WHERE name LIKE '%2026%' AND retired = 0;
+   ```
+
+   That is how the year's outgoing set stops being offered at the same moment
+   the incoming one lands. OpenMRS retires rather than deletes, so the rows stay
+   and every observation ever recorded against them keeps resolving — one
+   `UPDATE` undoes it, and the run prints it. `AND retired = 0` is this script's
+   own addition to the statement, for the same reason `idgen` carries it:
+   without it every run would rewrite `date_retired` on rows retired months ago
+   and the report would claim a change it did not make.
+
+   The retirement also **clears the recorded sha256** of those forms in the
+   import state file — not their version. The importer deploys a form only when
+   its file changed, and retiring one does not change its file, so without that
+   the very forms just retired would be skipped as "unchanged" and the site
+   would be left with no live copy of them. The version is kept because the
+   importer deploys `max(state version, server version) + 1` and a retired form
+   is not in the server's answer.
+
+   Tune it with `EREGISTER_FORM_RETIRE_NAME_LIKE` (the SQL `LIKE` pattern),
+   `EREGISTER_FORM_RETIRE_REASON` and `EREGISTER_FORM_RETIRE_BY`; skip it with
+   `--no-retire-forms`, which leaves both generations live. It gets a report row
+   of its own — a database that is still booting is a `GAP`, because the old
+   forms are then still being offered and nothing else on the site will retire
+   them.
+
+   Then the import itself. On a freshly installed site this is the
    first time its forms reach the EMR at all, because `install.sh` does not
    import them. Only forms whose content changed are deployed, so on a site that
    is already current it is a no-op. It then **decodes the HTML entities** in the
@@ -725,13 +760,15 @@ no `GAP` rows, so it can be wired into monitoring:
 ```
 
 Note what that line switches off. `--yes` answers every confirmation with "yes",
-so a scheduled run would otherwise import forms, retire the identifier source
-and reload the EMR unattended, week after week. A monitoring check should report
+so a scheduled run would otherwise retire and re-import forms, retire the
+identifier source and reload the EMR unattended, week after week. A monitoring check should report
 the site, not change it — keep the skips, and do the writing runs by hand.
 
 Flags: `--decode` (run only the form-JSON decode, then stop — see
 [Decoding on its own](#decoding-on-its-own)), `--yes`, `--no-recreate`,
 `--force-repos`, `--no-stack`, `--no-forms`,
+`--no-retire-forms` (deploy the new forms without retiring the ones they
+replace — both generations are then offered),
 `--no-decode` (import the forms but leave the entities in what the EMR wrote),
 `--no-idgen` (leave the identifier source in use),
 `--no-concepts` (leave the dictionary alone entirely — no DB probe, and the
@@ -748,7 +785,9 @@ for `--yes` if the credentials file is missing), `EREGISTER_UPGRADE_REPO`,
 `EREGISTER_DB_BACKUP=0`, `EREGISTER_DB_BACKUP_CRON`, `EREGISTER_DB_BACKUP_KEEP`,
 `EREGISTER_EMR_SERVICE`, `EREGISTER_CONCEPT_IMPORT=0`,
 `EREGISTER_IMPORT_REPORTING=0`, `EREGISTER_REPORTING_SQL_NAME`,
-`EREGISTER_REF_REPORTING`, `EREGISTER_FORM_DECODE=0`,
+`EREGISTER_REF_REPORTING`, `EREGISTER_FORM_RETIRE=0`,
+`EREGISTER_FORM_RETIRE_NAME_LIKE`, `EREGISTER_FORM_RETIRE_REASON`,
+`EREGISTER_FORM_RETIRE_BY`, `EREGISTER_FORM_DECODE=0`,
 `EREGISTER_FORM_DECODE_DIR`, `EREGISTER_FORM_DECODE_MAX_PASSES`,
 `EREGISTER_IDGEN_RETIRE=0`, `EREGISTER_IDGEN_RETIRE_ID`,
 `EREGISTER_IDGEN_RETIRE_REASON`, `EREGISTER_IDGEN_RETIRE_BY`.

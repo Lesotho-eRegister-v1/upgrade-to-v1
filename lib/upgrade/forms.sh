@@ -456,6 +456,215 @@ _forms_schedule() {
 }
 
 # -----------------------------------------------------------------------------
+# _forms_sql_quote — make a value safe to drop inside a single-quoted MySQL
+# string. Backslash first (it is MySQL's own escape character, so doubling it
+# after the quotes would double the quotes' escapes too), then the quote.
+# -----------------------------------------------------------------------------
+_forms_sql_quote() {
+  local s="$1"
+  s="${s//\\/\\\\}"
+  s="${s//\'/\'\'}"
+  printf '%s' "$s"
+}
+
+# -----------------------------------------------------------------------------
+# _forms_retire_stale — retire the forms this deployment is about to replace.
+#
+# WHAT IT RUNS
+#   UPDATE form SET retired = 1, retired_by = <FORM_RETIRE_BY>,
+#          date_retired = NOW(), retire_reason = '<FORM_RETIRE_REASON>'
+#   WHERE name LIKE '<FORM_RETIRE_NAME_LIKE>' AND retired = 0;
+#
+#   OpenMRS retires rather than deletes: the rows stay, every observation ever
+#   recorded against those forms keeps resolving, and the forms simply stop
+#   being offered. One statement undoes it (the report prints it).
+#
+# WHY IT RUNS HERE AND NOT AS A STEP OF ITS OWN
+#   It is half of one operation — retire the outgoing set, deploy the incoming
+#   one — and the halves must not come apart. A run that retired the 2026 forms
+#   and then did not import would leave the site with nothing to fill in. So it
+#   is called from _cu_forms_import, AFTER the operator has agreed to the import
+#   and the credentials have been verified, immediately before the importer.
+#
+# WHY IT CLEARS sha256 IN THE IMPORT STATE
+#   The importer deploys a form only when its file changed since the last run
+#   (sha256 per form, in FORM_IMPORT_STATE). Retiring a form does not change its
+#   file — so without this, the very forms just retired would be skipped as
+#   "unchanged" and the site would be left with no live copy of them at all.
+#   Only the hash is cleared, never the recorded version: the importer takes
+#   max(state version, server version) + 1, and a retired form is not in the
+#   server's answer, so dropping the version could make it redeploy a number
+#   that already exists on a retired row.
+#
+# Sets, for the caller to report on:
+#   FORMS_RETIRE_STATUS  retired | none | disabled | declined | no-db | failed
+#   FORMS_RETIRE_DETAIL  one line explaining that status
+#   FORMS_RETIRE_COUNT   how many live forms matched (and so were retired)
+#
+# Returns non-zero only when the UPDATE was attempted and failed. "Nothing
+# matched", "disabled" and "the operator said no" are successes — the database
+# is unchanged and the next run can try again.
+#
+# Depends on the DB plumbing in concepts.sh (_concepts_mysql,
+# _concepts_resolve_compose, _concepts_db_ready). catch-up.sh sources that
+# module; the standalone ./import-forms.sh does not, and there the step reports
+# no-db and changes nothing.
+# -----------------------------------------------------------------------------
+_forms_retire_stale() {
+  FORMS_RETIRE_STATUS=""; FORMS_RETIRE_DETAIL=""; FORMS_RETIRE_COUNT=0
+
+  if [ "${FORM_RETIRE:-1}" != "1" ]; then
+    info "Form retirement disabled (--no-retire-forms / EREGISTER_FORM_RETIRE=0); skipping."
+    FORMS_RETIRE_STATUS="disabled"
+    FORMS_RETIRE_DETAIL="left alone (--no-retire-forms)"
+    return 0
+  fi
+
+  if ! declare -F _concepts_mysql >/dev/null 2>&1; then
+    FORMS_RETIRE_STATUS="no-db"
+    FORMS_RETIRE_DETAIL="database plumbing (concepts.sh) is not loaded — nothing retired"
+    return 0
+  fi
+  if ! _concepts_resolve_compose >/dev/null 2>&1; then
+    FORMS_RETIRE_STATUS="no-db"
+    FORMS_RETIRE_DETAIL="docker compose is not available on this host"
+    return 0
+  fi
+  if [ ! -d "$RESTORE_DIR" ]; then
+    FORMS_RETIRE_STATUS="no-db"
+    FORMS_RETIRE_DETAIL="no stack directory at ${RESTORE_DIR}"
+    return 0
+  fi
+  # One probe, no polling — same reasoning as the concept import and idgen: a
+  # database that is still booting should cost one question, not a hang.
+  if ! _concepts_db_ready; then
+    warn "${DB_SERVICE}:${DB_NAME} is not accepting connections right now."
+    FORMS_RETIRE_STATUS="no-db"
+    FORMS_RETIRE_DETAIL="${DB_SERVICE}:${DB_NAME} not reachable — nothing retired"
+    return 0
+  fi
+
+  local like reason names count
+  like="$(_forms_sql_quote "$FORM_RETIRE_NAME_LIKE")"
+  reason="$(_forms_sql_quote "$FORM_RETIRE_REASON")"
+
+  # Look before writing: the report should name what was retired, and the names
+  # are needed afterwards to clear their hashes out of the import state.
+  names="$(printf "SELECT name FROM form WHERE name LIKE '%s' AND retired = 0 ORDER BY name;\n" \
+             "$like" | _concepts_mysql -N 2>/dev/null)" || names=""
+  # `|| true`: grep -c exits 1 on no matches, and no match is a normal outcome.
+  count="$(printf '%s\n' "$names" | grep -c . || true)"
+  FORMS_RETIRE_COUNT="${count:-0}"
+
+  if [ "${count:-0}" -eq 0 ]; then
+    success "No live form matches name LIKE '${FORM_RETIRE_NAME_LIKE}'; nothing to retire."
+    FORMS_RETIRE_STATUS="none"
+    FORMS_RETIRE_DETAIL="no live form matches name LIKE '${FORM_RETIRE_NAME_LIKE}' in ${DB_NAME}"
+    return 0
+  fi
+
+  info "${count} live form(s) in '${DB_NAME}' match name LIKE '${FORM_RETIRE_NAME_LIKE}':"
+  printf '%s\n' "$names" | sed 's/^/    • /' >&2
+  warn "Retiring them stops them being offered. The rows are kept and the"
+  warn "observations already recorded against them are NOT touched — this is reversible."
+  if ! confirm "Retire these ${count} form(s) before importing?"; then
+    warn "Form retirement skipped by user; the import below still runs."
+    FORMS_RETIRE_STATUS="declined"
+    FORMS_RETIRE_DETAIL="declined — ${count} matching form(s) left live"
+    return 0
+  fi
+
+  if ! printf "UPDATE form
+SET retired = 1,
+    retired_by = %s,
+    date_retired = NOW(),
+    retire_reason = '%s'
+WHERE name LIKE '%s'
+  AND retired = 0;\n" "$FORM_RETIRE_BY" "$reason" "$like" | _concepts_mysql
+  then
+    error "Could not retire the forms matching name LIKE '${FORM_RETIRE_NAME_LIKE}'."
+    FORMS_RETIRE_STATUS="failed"
+    FORMS_RETIRE_DETAIL="the UPDATE failed for name LIKE '${FORM_RETIRE_NAME_LIKE}'"
+    return 1
+  fi
+
+  # Read it back rather than trusting the exit status: mysql reports success for
+  # an UPDATE that matched nothing at all.
+  local left
+  left="$(printf "SELECT COUNT(*) FROM form WHERE name LIKE '%s' AND retired = 0;\n" \
+            "$like" | _concepts_mysql -N 2>/dev/null | tr -d '[:space:]')" || left=""
+  if [ "${left:-1}" != "0" ]; then
+    error "The UPDATE ran but ${left:-some} form(s) matching '${FORM_RETIRE_NAME_LIKE}' are still live."
+    FORMS_RETIRE_STATUS="failed"
+    FORMS_RETIRE_DETAIL="${left:-some} form(s) still live after the UPDATE"
+    return 1
+  fi
+
+  _forms_forget_state "$names"
+
+  success "Retired ${count} form(s) matching name LIKE '${FORM_RETIRE_NAME_LIKE}'."
+  info "Undo it with:"
+  info "  UPDATE form SET retired = 0, retired_by = NULL, date_retired = NULL,"
+  info "         retire_reason = NULL WHERE retire_reason = '${FORM_RETIRE_REASON}';"
+  FORMS_RETIRE_STATUS="retired"
+  FORMS_RETIRE_DETAIL="${count} form(s) retired (reason: ${FORM_RETIRE_REASON})"
+  return 0
+}
+
+# -----------------------------------------------------------------------------
+# _forms_forget_state <names-one-per-line> — blank the recorded sha256 of those
+# forms in FORM_IMPORT_STATE so the importer stops calling them "unchanged".
+#
+# The state file is keyed "<server url>|<form name>", so the match is on the
+# part after the first '|'. The recorded version is deliberately LEFT ALONE —
+# see the note in _forms_retire_stale.
+#
+# Best effort by design: no jq, no state file, or an unwritable one are all
+# reported as a warning and nothing more. The retirement above has already
+# happened and is the thing that mattered; the operator can force the redeploy
+# by hand with `sudo FORM_IMPORT_SCRIPT --force -r FORMS_DIR`.
+# -----------------------------------------------------------------------------
+_forms_forget_state() {
+  local names="$1" tmp mode
+
+  if ! command -v jq >/dev/null 2>&1; then
+    warn "jq is not installed — cannot clear the import state for the retired forms."
+    warn "They may be skipped as 'unchanged'. Force them with:"
+    warn "  sudo ${FORM_IMPORT_SCRIPT} --force -r ${FORMS_DIR}"
+    return 0
+  fi
+  if ! as_root test -s "$FORM_IMPORT_STATE"; then
+    # Nothing recorded means nothing will be skipped. Silence is correct here.
+    return 0
+  fi
+
+  # Keep the file's existing mode. It holds no secrets — form names, versions
+  # and hashes — and forcing it to 0600 root would lock out a later importer run
+  # started as the operator rather than through the root-owned runner.
+  mode="$(as_root stat -c '%a' "$FORM_IMPORT_STATE" 2>/dev/null)" || mode=""
+  case "$mode" in ([0-7][0-7][0-7]|[0-7][0-7][0-7][0-7]) ;; (*) mode="644" ;; esac
+
+  tmp="$(mktemp)"
+  if as_root cat "$FORM_IMPORT_STATE" 2>/dev/null \
+     | jq --arg names "$names" '
+         ($names | split("\n") | map(select(length > 0))) as $n
+         | with_entries(
+             (.key | sub("^[^|]*\\|"; "")) as $nm
+             | if ($n | index($nm)) then .value.sha256 = "" else . end)' >"$tmp" 2>/dev/null \
+     && [ -s "$tmp" ]
+  then
+    as_root install -m "$mode" "$tmp" "$FORM_IMPORT_STATE"
+    rm -f "$tmp"
+    info "Cleared the recorded hash of the retired forms so the import redeploys them."
+  else
+    rm -f "$tmp"
+    warn "Could not rewrite ${FORM_IMPORT_STATE}; the retired forms may be skipped as"
+    warn "'unchanged'. Force them with:  sudo ${FORM_IMPORT_SCRIPT} --force -r ${FORMS_DIR}"
+  fi
+  return 0
+}
+
+# -----------------------------------------------------------------------------
 # run_form_import — one immediate run through the installed runner, so the
 # forms are live now rather than after the first nightly firing.
 # Advisory: the EMR often needs 30+ minutes to finish booting, so a failure

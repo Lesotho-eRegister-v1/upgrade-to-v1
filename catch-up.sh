@@ -9,12 +9,18 @@
 # backup and restarts everything.
 #
 #   Read-mostly: every check is read-only and no repo with local changes is ever
-#   reset. FOUR steps write. The first decodes the HTML entities in the form JSON
-#   the EMR holds in /home/bahmni/clinical_forms — skip it with --no-decode. The
-#   second imports the OpenMRS report definitions (openmrs_reporting_release ->
+#   reset. FIVE steps write. The first retires the forms this release replaces —
+#   every live row of the 'form' table in the 'openmrs' database whose name
+#   matches '%2026%' — immediately before the new ones are imported over them, so
+#   the outgoing set stops being offered the moment the incoming one lands. The
+#   rows are retired, never deleted, so the observations recorded against them
+#   are untouched and one UPDATE undoes it — skip it with --no-retire-forms. The
+#   second decodes the HTML entities in the form JSON the EMR holds in
+#   /home/bahmni/clinical_forms — skip it with --no-decode. The
+#   third imports the OpenMRS report definitions (openmrs_reporting_release ->
 #   the serialized_object table of the 'openmrs' database), after dumping that
 #   table to bahmni-backup so it can be undone — skip it with --no-reporting. The
-#   third retires one row of idgen_identifier_source in that same database,
+#   fourth retires one row of idgen_identifier_source in that same database,
 #   reversibly and only while it is still in use — skip it with --no-idgen. The
 #   last is the final job: it recreates the EMR service so everything refreshed
 #   above is actually loaded:
@@ -36,7 +42,9 @@
 #   4. checks all FOUR scheduled jobs (repo auto-pull, daily clinical form
 #      import, daily concept-dictionary import, daily database backup) and
 #      installs whichever is missing
-#   5. runs the form import (only forms whose content changed are deployed), then
+#   5. retires the forms this release replaces (every live form whose name
+#      matches '%2026%' by default — reversibly; --no-retire-forms skips it),
+#      runs the form import (only forms whose content changed are deployed), then
 #      decodes the HTML entities (&amp; &lt; &gt;) in the form JSON the EMR keeps
 #      in /home/bahmni/clinical_forms — repeatedly, because the escaping nests,
 #      until a pass finds nothing left to decode. --no-decode skips it
@@ -71,9 +79,10 @@
 # USAGE
 #   curl -fsSL --retry 8 --retry-max-time 180 <raw>/catch-up.sh | bash
 #   ./catch-up.sh [--decode]
-#   ./catch-up.sh [--yes] [--no-stack] [--no-forms] [--no-decode] [--no-concepts]
-#                 [--no-reporting] [--no-idgen] [--no-db-backup] [--no-recreate]
-#                 [--force-repos] [--install-dir DIR] [--no-color] [--help]
+#   ./catch-up.sh [--yes] [--no-stack] [--no-forms] [--no-retire-forms]
+#                 [--no-decode] [--no-concepts] [--no-reporting] [--no-idgen]
+#                 [--no-db-backup] [--no-recreate] [--force-repos]
+#                 [--install-dir DIR] [--no-color] [--help]
 #
 #   --decode         DECODE AND NOTHING ELSE, then stop. For a site whose forms
 #                    are already deployed and only need the entity clean-up in
@@ -87,7 +96,14 @@
 #   --no-stack       Do not fast-forward bahmni-docker-ls (the compose files the
 #                    running stack reads). Everything else is still updated.
 #   --no-forms       Leave the clinical form import and its schedule alone.
-#                    Implies --no-decode.
+#                    Implies --no-decode and --no-retire-forms.
+#   --no-retire-forms  Do not retire the forms the release replaces. By default,
+#                    straight before the import, every LIVE form whose name
+#                    matches EREGISTER_FORM_RETIRE_NAME_LIKE ('%2026%') is
+#                    marked retired in 'openmrs' so the outgoing set stops being
+#                    offered the moment the incoming one lands. The rows and the
+#                    observations recorded against them are kept — it is undone
+#                    by one UPDATE, which the run prints. The import still runs.
 #   --no-decode      Do not decode the HTML entities in the form JSON the EMR
 #                    holds in /home/bahmni/clinical_forms. The import still runs;
 #                    only the clean-up pass over what it wrote is skipped.
@@ -124,6 +140,11 @@
 #   EREGISTER_BAHMNI_PASS       EMR password for the form import; saved when the
 #                               EMR accepts it and the stored one is missing or
 #                               rejected (otherwise you are prompted)
+#   EREGISTER_FORM_RETIRE=0           same as --no-retire-forms
+#   EREGISTER_FORM_RETIRE_NAME_LIKE   SQL LIKE pattern matched against form.name
+#                                     (default '%2026%')
+#   EREGISTER_FORM_RETIRE_REASON      the retire_reason written to those rows
+#   EREGISTER_FORM_RETIRE_BY          users.user_id to record (default 1, admin)
 #   EREGISTER_FORM_DECODE=0           same as --no-decode
 #   EREGISTER_FORM_DECODE_DIR         folder to decode INSIDE the EMR service
 #                                     (default /home/bahmni/clinical_forms)
@@ -527,7 +548,12 @@ parse_catchup_args() {
     case "$1" in
       -y|--yes)       ASSUME_YES="1" ;;
       --no-stack)     CATCHUP_STACK_REPO="0" ;;
-      --no-forms)     IMPORT_FORMS="0" ;;
+      # The retirement is half of the import (retire the outgoing set, deploy the
+      # incoming one), so leaving the import alone leaves the retirement alone.
+      --no-forms)     IMPORT_FORMS="0"; FORM_RETIRE="0" ;;
+      # Leaves the outgoing form set live. The import still deploys the new one,
+      # so both generations are offered until someone retires the old by hand.
+      --no-retire-forms) FORM_RETIRE="0" ;;
       # Only the entity clean-up over what the EMR wrote; the import still runs.
       --no-decode)    FORM_DECODE="0" ;;
       # The inverse: the clean-up and nothing else. --decode-only is accepted
@@ -589,10 +615,12 @@ banner_catchup() {
     return 0
   fi
   info "eRegister v1 catch-up — reconciling this site with the current release."
-  info "Read-mostly, with four exceptions: the form JSON in the '${EMR_SERVICE}' container is"
-  info "decoded (--no-decode skips it), the report definitions are imported into"
-  info "'${DB_NAME}' (backed up first; --no-reporting skips it), identifier source ${IDGEN_RETIRE_ID} is"
-  info "retired in that same database (reversibly; --no-idgen skips it), and the"
+  info "Read-mostly, with five exceptions: the form JSON in the '${EMR_SERVICE}' container is"
+  info "decoded (--no-decode skips it), the forms named like '${FORM_RETIRE_NAME_LIKE}' are retired in"
+  info "'${DB_NAME}' just before the new ones are imported (reversibly; --no-retire-forms"
+  info "skips it), the report definitions are imported into that same database"
+  info "(backed up first; --no-reporting skips it), identifier source ${IDGEN_RETIRE_ID} is"
+  info "retired there too (reversibly; --no-idgen skips it), and the"
   info "'${EMR_SERVICE}' service is recreated at the end so the refreshed config, omods and"
   info "forms are loaded (--no-recreate skips it)."
 }

@@ -132,6 +132,35 @@ FORM_DECODE_MAX_PASSES="${EREGISTER_FORM_DECODE_MAX_PASSES:-5}"
 # alone. See catch_up in lib/upgrade/catchup.sh.
 CATCHUP_DECODE_ONLY="${EREGISTER_CATCHUP_DECODE_ONLY:-0}"
 
+# --- Retiring the forms a deployment replaces --------------------------------
+# Straight before the import, catch-up.sh marks every LIVE form whose name
+# matches FORM_RETIRE_NAME_LIKE retired in the 'openmrs' database:
+#
+#   UPDATE form SET retired = 1, retired_by = <by>, date_retired = NOW(),
+#          retire_reason = '<reason>'
+#   WHERE name LIKE '<pattern>' AND retired = 0;
+#
+# WHY: a release deploys the year's forms as a set, and the previous set has to
+# stop being offered at the same moment the new one arrives. OpenMRS retires
+# rather than deletes, so the rows and every observation recorded against them
+# stay exactly as they are — this is reversible with one statement.
+#
+# `AND retired = 0` is this script's own addition to the statement, for the same
+# reason idgen.sh carries it: without it every run rewrites date_retired on rows
+# that were retired months ago, and the report claims a change it did not make.
+#
+# It runs INSIDE the form-import step, after the operator has agreed to import —
+# retiring the old set and then not deploying the new one would leave the site
+# with no forms at all. See _forms_retire_stale in lib/upgrade/forms.sh.
+# 0 (or --no-retire-forms) skips it; --no-forms skips it with the whole step.
+FORM_RETIRE="${EREGISTER_FORM_RETIRE:-1}"
+# The SQL LIKE pattern matched against form.name. % is "any run of characters",
+# so the default catches every form with 2026 anywhere in its name.
+FORM_RETIRE_NAME_LIKE="${EREGISTER_FORM_RETIRE_NAME_LIKE:-%2026%}"
+FORM_RETIRE_REASON="${EREGISTER_FORM_RETIRE_REASON:-deploying latest forms with the latest changes - kgatman}"
+# users.user_id recorded as the retiring user. 1 is the default admin account.
+FORM_RETIRE_BY="${EREGISTER_FORM_RETIRE_BY:-1}"
+
 # --- Retiring a disused identifier source ------------------------------------
 # One row of idgen_identifier_source in the 'openmrs' database is marked retired
 # by catch-up.sh: the source stops being offered for new identifiers, while the
