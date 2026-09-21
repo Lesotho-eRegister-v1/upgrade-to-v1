@@ -320,6 +320,13 @@ log() { printf '%s %s\n' "$(date '+%Y-%m-%dT%H:%M:%S%z')" "$*" >>"$LOG"; }
 # git refuses a repo owned by "someone else" unless told otherwise.
 git_here() { git -c safe.directory='*' "$@"; }
 
+# `--untracked-files=no` is deliberate. `git reset --hard` never deletes
+# untracked files, so an untracked file is not work a refresh could destroy —
+# and treating it as "local changes" is what froze sites whose EMR drops
+# <form-uuid>.json into the clone: the tree is permanently dirty, the refresh
+# is skipped every night, and new forms stop arriving. Only a modification to a
+# TRACKED file is real local work worth protecting.
+
 mkdir -p "$(dirname "$LOG")" "$WORKDIR" 2>/dev/null || true
 log "=== form import run start (pid $$) ==="
 
@@ -350,8 +357,8 @@ if [ "$SELF_PULL" = "1" ] && [ -d "$FORMS_DIR/.git" ]; then
     :
   elif [ "$branch" = "HEAD" ]; then
     log "SKIP  refresh ($FORMS_DIR is on a detached HEAD)"
-  elif [ -n "$(git_here -C "$FORMS_DIR" status --porcelain 2>/dev/null)" ]; then
-    log "SKIP  refresh ($FORMS_DIR has uncommitted local changes)"
+  elif [ -n "$(git_here -C "$FORMS_DIR" status --porcelain --untracked-files=no 2>/dev/null)" ]; then
+    log "SKIP  refresh ($FORMS_DIR has uncommitted changes to tracked files)"
   elif git_here -C "$FORMS_DIR" fetch --depth 1 origin "$branch" >>"$LOG" 2>&1 &&
        git_here -C "$FORMS_DIR" reset --hard "origin/$branch" >>"$LOG" 2>&1; then
     log "OK    refreshed $FORMS_DIR ($branch @ $(git_here -C "$FORMS_DIR" rev-parse --short HEAD 2>/dev/null))"

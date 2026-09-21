@@ -60,6 +60,7 @@ openmrs_reporting_release
 
 A **dirty working tree is left untouched.** Never clobber uncommitted local work.
 
+> [!IMPORTANT]
 > Pulling a repo changes files on disk. It does **not** deploy anything. The
 > forms still need an import, the dictionary still needs a load, and the stack
 > still needs `docker compose up -d`. That is what the nightly imports and

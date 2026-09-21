@@ -104,13 +104,29 @@ PRE
 } > "$PREAMBLE"
 
 # --- stage the chapters ------------------------------------------------------
+# GitHub alert markers (`> [!WARNING]`) render natively on GitHub and become
+# admonitions on the MkDocs site. pandoc parses them too, but its LaTeX writer
+# drops the box and emits a bare "Warning" line, which reads worse than the
+# blockquote it replaced. So for the PDF they become a bold lead-in inside the
+# blockquote, which is what they look like everywhere else anyway.
+alerts_to_bold() {
+  sed -E \
+    -e 's/^> \[!NOTE\][[:space:]]*$/> **Note**\n>/' \
+    -e 's/^> \[!TIP\][[:space:]]*$/> **Tip**\n>/' \
+    -e 's/^> \[!IMPORTANT\][[:space:]]*$/> **Important**\n>/' \
+    -e 's/^> \[!WARNING\][[:space:]]*$/> **Warning**\n>/' \
+    -e 's/^> \[!CAUTION\][[:space:]]*$/> **Caution**\n>/'
+}
+
 stage_one() {  # stage_one <src> <dst>
   if [ "$MARKS_OK" = "1" ]; then
-    sed -e 's/⏳/[..]/g' -e 's/🔍/[??]/g' -e 's/✨/[**]/g' "$1" > "$2"
+    alerts_to_bold < "$1" \
+      | sed -e 's/⏳/[..]/g' -e 's/🔍/[??]/g' -e 's/✨/[**]/g' > "$2"
   else
-    sed -e 's/⏳/[..]/g' -e 's/🔍/[??]/g' -e 's/✨/[**]/g' \
-        -e 's/✔/[ok]/g'  -e 's/⟳/[fix]/g' -e 's/✘/[gap]/g' \
-        -e 's/ℹ/i/g'     -e 's/⚠/!/g' "$1" > "$2"
+    alerts_to_bold < "$1" \
+      | sed -e 's/⏳/[..]/g' -e 's/🔍/[??]/g' -e 's/✨/[**]/g' \
+            -e 's/✔/[ok]/g'  -e 's/⟳/[fix]/g' -e 's/✘/[gap]/g' \
+            -e 's/ℹ/i/g'     -e 's/⚠/!/g' > "$2"
   fi
 }
 

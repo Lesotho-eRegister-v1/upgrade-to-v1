@@ -4,6 +4,7 @@ The `eregister_concepts_release_v1` repo ships a **mysqldump of the OpenMRS
 concept dictionary** — `omrs_concept_dictionary_<timestamp>.sql`. It is loaded
 into the `openmrs` database inside the `openmrsdb` service.
 
+> [!IMPORTANT]
 > **Nothing imports this during the upgrade, and `catch-up.sh` only ever reports
 > on it.** The import drops and recreates whole tables, which is a big enough
 > operation to belong to a job of its own, or to a deliberate manual run.
@@ -24,6 +25,7 @@ sed -n 's/^DROP TABLE IF EXISTS `\([A-Za-z0-9_]*\)`.*/\1/p' <dump> | sort -u
 so the pre-import backup always matches the file about to be imported, even when
 a new release adds a table.
 
+> [!CAUTION]
 > **`drug_order` is among those tables.** Any drug orders the site currently
 > holds are replaced. This is the single most important thing to understand
 > about this import.
@@ -200,4 +202,5 @@ The password comes from `EREGISTER_DB_PASS` when set, else the container's own
 | `EREGISTER_CONCEPT_IMPORT_FIRST_DELAY_SEC` | `10800` (3h) | How long to wait for it |
 | `EREGISTER_CONCEPT_IMPORT_RESTART_EMR` | `0` | Restart the EMR after an import (30+ min downtime) |
 
+> [!NOTE]
 > An imported dictionary is only visible after the EMR restarts.

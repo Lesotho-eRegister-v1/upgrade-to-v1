@@ -27,6 +27,7 @@ documented:
 - `import-concepts.sh` — the concept dictionary, on its own
 - `bin/bahmni_form_import.sh` — the form importer itself (installed by the above)
 
+> [!CAUTION]
 > **The single most important rule in this guide:** once a site is on v1, do
 > **not** re-run `install.sh` to pick up changes. It freezes the stack, restores
 > a backup and restarts everything. Run `catch-up.sh` instead.

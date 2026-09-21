@@ -11,6 +11,7 @@ easiest way to lose data.
 | Retention | Kept forever | Newest 14 |
 | Purpose | The 0.92 data the upgrade migrates | Undo a bad import or a deleted record |
 
+> [!CAUTION]
 > **`install.sh --force` reloads the database from the pre-upgrade dump**,
 > replacing anything entered since it was made. On a site that has been live on
 > v1 for a while, that is data loss.
@@ -34,6 +35,7 @@ sudo /usr/local/bin/eregister-db-backup.sh    # run it now
 4. Only then move it into place and repoint `latest.sql.gz`
 5. Delete all but the newest `EREGISTER_DB_BACKUP_KEEP` dumps
 
+> [!WARNING]
 > Step 3 is the one that matters. A dump cut short by an OOM or a restarting
 > container is otherwise a perfectly plausible-looking file that restores half a
 > site — and looks exactly like a good one until the day you need it.

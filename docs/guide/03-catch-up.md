@@ -44,6 +44,7 @@ when there are no gaps**, so it doubles as a monitoring check.
 | `--force-repos` | Bring off-release repos back onto their pinned ref, **discarding** local changes |
 | `--install-dir DIR` | Install base (default `/var/lib`) |
 
+> [!NOTE]
 > `--decode` and `--no-decode` contradict each other. Passing both is an error,
 > because picking one silently would leave you working out why your run did
 > nothing.
@@ -287,6 +288,7 @@ when the container was first created keeps the old content even across a plain
 restart. `--force-recreate` replaces the container; `--renew-anon-volumes`
 throws its anonymous volumes away so they are re-seeded.
 
+> [!WARNING]
 > **This takes the EMR down for its usual 30+ minute boot.** Named volumes and
 > the separate `openmrsdb` service (the patient data) are **not** touched, so
 > this is not a data-loss operation — but anything a site hand-placed *inside*
@@ -420,6 +422,7 @@ unattended, week after week.
 whichever containers a freshly-pulled `bahmni-docker-ls` changed, at 06:30 on a
 Monday, with nobody watching.
 
+> [!WARNING]
 > **A monitoring check should report the site, not change it.** Keep the skips,
 > and do the writing runs by hand.
 

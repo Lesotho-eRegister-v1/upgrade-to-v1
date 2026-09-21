@@ -21,6 +21,7 @@ cd /var/lib/v1/upgrade-to-v1 && sudo ./ocl-fix.sh
 sudo ./catch-up.sh
 ```
 
+> [!WARNING]
 > Step 3 is not optional. `install.sh` clones the forms and the report
 > definitions but imports neither. Until `catch-up.sh` has run, neither is on
 > the site.
@@ -255,6 +256,7 @@ sudo crontab -e
 Exit status is `0` only when there are no `GAP` rows, so any monitoring system
 that watches exit codes works unchanged.
 
+> [!WARNING]
 > Keep every one of those skips. `--yes` answers every confirmation, so without
 > them a scheduled run would retire and re-import forms, retire the identifier
 > source, apply the compose files and reload the EMR unattended — at 06:30 on a
@@ -311,6 +313,7 @@ cat /var/lib/v1/.eregister-upgrade-complete
 | `stage=migrated` | Re-run `install.sh` — it will redo the upgrade and finish the outstanding steps |
 | *(file absent)* | Re-run `install.sh` |
 
+> [!CAUTION]
 > A re-run at `stage=migrated` **reloads the database from the pre-upgrade
 > dump**, replacing anything entered since it was made.
 

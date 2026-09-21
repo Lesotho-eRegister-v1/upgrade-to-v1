@@ -325,23 +325,77 @@ api_post_nobody() { # api_post_nobody <path-including-query>
   printf '%s' "${out%$'\n'*}"
 }
 
-# newest_form <name> -> "<uuid>\t<version>\t<published>" for the highest version
-# of that form on the server; empty when there is none. The name is matched
-# exactly, because `q=` is a substring search and "ANC Intake" would otherwise
-# also match "ANC Intake (Nurse)".
-newest_form() { # newest_form <name>
-  local name="$1" body
-  body="$(api_get "$FORM_URL" --get \
-    --data-urlencode "q=$name" \
-    --data-urlencode "v=custom:(uuid,name,version,published)")"
-  [[ "$(last_code)" == "200" ]] || return 1
+# newest_form <name> [includeAll] -> "<uuid>\t<version>\t<published>\t<retired>"
+# for the highest version of that form on the server; empty when there is none.
+#
+# The name is matched exactly, because `q=` is a substring search and
+# "ANC Intake" would otherwise also match "ANC Intake (Nurse)".
+#
+# NEWEST_FORM_ERR is set to the reason when the lookup could not be performed at
+# all, so the caller can say "the search failed" rather than the much more
+# alarming — and quite different — "the server does not have this form".
+#
+# A second argument asks for retired forms too: the default search hides them,
+# which is exactly why a retired form reads as "missing" without it.
+newest_form() { # newest_form <name> [include-retired]
+  local name="$1" all="${2:-}" body code rep
+  NEWEST_FORM_ERR=""
+
+  # custom reps are cheap but a server that rejects one answers 400, not 200.
+  # Fall back to the full representation rather than reporting the form absent.
+  for rep in "custom:(uuid,name,version,published,retired)" "full"; do
+    if [[ -n "$all" ]]; then
+      body="$(api_get "$FORM_URL" --get \
+        --data-urlencode "q=$name" --data-urlencode "includeAll=true" \
+        --data-urlencode "v=${rep}")"
+    else
+      body="$(api_get "$FORM_URL" --get \
+        --data-urlencode "q=$name" --data-urlencode "v=${rep}")"
+    fi
+    code="$(last_code)"
+    [[ "$code" == "200" ]] && break
+  done
+  if [[ "$code" != "200" ]]; then
+    NEWEST_FORM_ERR="form search returned HTTP ${code}"
+    return 1
+  fi
+
   jq -r --arg n "$name" '
     [ .results[]? | select(.name == $n) ]
     | sort_by(.version | tostring | tonumber? // 0)
     | last
     | if . == null then "" else
-        [ .uuid, (.version | tostring), (.published | tostring) ] | @tsv
+        [ .uuid, (.version | tostring),
+          (.published | tostring), ((.retired // false) | tostring) ] | @tsv
       end' <<<"$body" 2>/dev/null
+}
+
+# form_state <name> — one lookup, answering every question the run has about a
+# form that is already deployed. Sets:
+#   FS_FOUND   0/1        is it on the server at all (retired included)
+#   FS_UUID    uuid of the newest version
+#   FS_VERSION that version
+#   FS_PUB     0/1        published
+#   FS_RETIRED 0/1        retired
+#   FS_ERR     non-empty  the lookup itself failed; the other fields mean nothing
+form_state() { # form_state <name>
+  local name="$1" row
+  FS_FOUND=0; FS_UUID=""; FS_VERSION=""; FS_PUB=0; FS_RETIRED=0; FS_ERR=""
+
+  row="$(newest_form "$name")" || { FS_ERR="$NEWEST_FORM_ERR"; return 1; }
+  if [[ -z "$row" ]]; then
+    # Not in the default listing. That is "absent" OR "retired" — and the two
+    # call for opposite responses, so ask again rather than guess.
+    row="$(newest_form "$name" includeAll)" || { FS_ERR="$NEWEST_FORM_ERR"; return 1; }
+    [[ -z "$row" ]] && return 0        # genuinely not there
+  fi
+
+  local pub ret
+  IFS=$'\t' read -r FS_UUID FS_VERSION pub ret <<<"$row"
+  FS_FOUND=1
+  [[ "$pub" == "true" ]] && FS_PUB=1
+  [[ "$ret" == "true" ]] && FS_RETIRED=1
+  return 0
 }
 
 # publish_form <uuid> -> 0 published, 1 could not.
@@ -376,22 +430,32 @@ publish_form() { # publish_form <uuid>
 # and counts what it changed. Never fatal on its own: a form that is deployed but
 # unpublished is a smaller problem than a run that stopped half way through.
 ensure_published() { # ensure_published <name> [known-uuid]
-  local name="$1" known="${2:-}" row uuid version published
-  row="$(newest_form "$name")" || row=""
-  if [[ -z "$row" ]]; then
+  local name="$1" known="${2:-}" uuid version
+
+  if ! form_state "$name"; then
+    echo "  WARNING: cannot publish '$name' — ${FS_ERR}"
+    return 1
+  fi
+
+  if [[ $FS_FOUND -eq 0 ]]; then
     if [[ -n "$known" ]]; then
-      uuid="$known"; published="false"
+      uuid="$known"; version=""
     else
-      echo "  WARNING: cannot publish '$name' — the server does not list it"
+      echo "  WARNING: cannot publish '$name' — no form of that name on the server"
       return 1
     fi
   else
-    IFS=$'\t' read -r uuid version published <<<"$row"
-  fi
-
-  if [[ "$published" == "true" ]]; then
-    [[ $VERBOSE -eq 1 ]] && echo "  already published (version ${version:-?})"
-    return 0
+    uuid="$FS_UUID"; version="$FS_VERSION"
+    if [[ $FS_RETIRED -eq 1 ]]; then
+      # Publishing a retired form would put a form nobody can reach back on the
+      # published list. The fix is a new version, which the import above does.
+      echo "  newest version (${version}) is RETIRED — not publishing it"
+      return 1
+    fi
+    if [[ $FS_PUB -eq 1 ]]; then
+      [[ $VERBOSE -eq 1 ]] && echo "  already published (version ${version})"
+      return 0
+    fi
   fi
 
   if ! publish_form "$uuid"; then
@@ -400,10 +464,9 @@ ensure_published() { # ensure_published <name> [known-uuid]
   fi
 
   # Read it back: a 200 from the endpoint is not the same as a published form.
-  row="$(newest_form "$name")" || row=""
-  if [[ -n "$row" ]]; then
-    IFS=$'\t' read -r uuid version published <<<"$row"
-    if [[ "$published" != "true" ]]; then
+  if form_state "$name" && [[ $FS_FOUND -eq 1 ]]; then
+    version="$FS_VERSION"
+    if [[ $FS_PUB -ne 1 ]]; then
       echo "  ERROR: publish returned OK but '$name' is still unpublished"
       EXIT_CODE=1
       return 1
@@ -548,6 +611,8 @@ IMPORTED=0
 FAILED=0
 SKIPPED=0
 PUBLISHED=0
+IGNORED=0       # files in the folder that are not form exports at all
+EMR_WRITTEN=0   # …of which, ones the EMR itself wrote (see the loop)
 
 # ------------------------------------------------------------------ per file
 
@@ -556,8 +621,27 @@ for FILE in "${FILES[@]}"; do
   echo "=== $(basename "$FILE")"
   [[ -r "$FILE" ]] || { echo "  cannot read file"; EXIT_CODE=1; FAILED=$((FAILED + 1)); continue; }
 
+  # Is this a Form Builder EXPORT at all?
+  #
+  # The folder can hold other JSON. In particular the EMR writes one
+  # <form-uuid>.json per DEPLOYED form — top-level uuid/resources, no formJson
+  # wrapper — and on a site where that output lands in the same folder as the
+  # exports, those files outnumber the real ones. They are not broken exports
+  # and must not be reported as failures: a run whose exit status is dominated
+  # by files that were never meant to be imported tells the operator nothing.
+  if ! jq -e 'type == "object" and has("formJson")' "$FILE" >/dev/null 2>&1; then
+    if jq -e 'type == "object" and has("uuid") and has("resources")' "$FILE" >/dev/null 2>&1; then
+      echo "  skipped: a form the EMR itself wrote (no formJson wrapper) — not an export"
+      EMR_WRITTEN=$((EMR_WRITTEN + 1))
+    else
+      echo "  skipped: not a Bahmni form export (no formJson key)"
+    fi
+    IGNORED=$((IGNORED + 1)); continue
+  fi
+
+  # It claims to be an export, so a missing body IS a real problem.
   if ! jq -e '.formJson.resources[0].value' "$FILE" >/dev/null 2>&1; then
-    echo "  parse error: not a valid form export (missing formJson.resources[0].value)"
+    echo "  parse error: form export is missing formJson.resources[0].value"
     EXIT_CODE=1; FAILED=$((FAILED + 1)); continue
   fi
 
@@ -568,12 +652,12 @@ for FILE in "${FILES[@]}"; do
   # rather than minutes, and it cannot change what any form contains.
   if [[ $PUBLISH_ONLY -eq 1 ]]; then
     if [[ $DRY_RUN -eq 1 ]]; then
-      row="$(newest_form "$FORM_NAME")" || row=""
-      if [[ -z "$row" ]]; then
+      if ! form_state "$FORM_NAME"; then
+        echo "  cannot tell — ${FS_ERR}"
+      elif [[ $FS_FOUND -eq 0 ]]; then
         echo "  not on the server"
       else
-        IFS=$'\t' read -r _u _v _p <<<"$row"
-        echo "  version ${_v} published=${_p}"
+        echo "  version ${FS_VERSION} published=${FS_PUB} retired=${FS_RETIRED}"
       fi
     else
       ensure_published "$FORM_NAME" || true
@@ -599,16 +683,36 @@ for FILE in "${FILES[@]}"; do
   [[ "$PREV_VERSION" =~ ^[0-9]+$ ]] || PREV_VERSION=0
 
   if [[ -n "$PREV_HASH" && "$PREV_HASH" == "$HASH" && $FORCE -eq 0 ]]; then
-    echo "  unchanged since version $PREV_VERSION — skipping (--force to import anyway)"
-    SKIPPED=$((SKIPPED + 1))
-    # Unchanged content does not mean published. A site whose forms were
-    # deployed before this script published anything has a folder full of
-    # drafts that no import will ever touch again, so check here too — it is
-    # one GET per form, and a POST only when there is something to fix.
-    if [[ $PUBLISH -eq 1 && $DRY_RUN -eq 0 ]]; then
-      ensure_published "$FORM_NAME" || true
+    # "The file has not changed" is not the same as "the site has this form".
+    # Ask the server before skipping. Two states demand a redeploy even though
+    # the export is byte-identical:
+    #
+    #   * the newest version is RETIRED — which is what the release retirement
+    #     does to the outgoing set. Skip here and the site is left with no live
+    #     copy of a form whose file will never change again.
+    #   * the form is missing outright — restored database, hand-deleted form,
+    #     or a state file carried over from another server.
+    #
+    # Anything else is a genuine no-op, except that an unpublished form still
+    # gets published (one GET per form, a POST only when there is a fix to make).
+    REDEPLOY_WHY=""
+    if [[ $DRY_RUN -eq 0 ]] && form_state "$FORM_NAME"; then
+      if [[ $FS_FOUND -eq 0 ]]; then
+        REDEPLOY_WHY="it is not on the server"
+      elif [[ $FS_RETIRED -eq 1 ]]; then
+        REDEPLOY_WHY="its newest version (${FS_VERSION}) is retired"
+      fi
     fi
-    continue
+
+    if [[ -z "$REDEPLOY_WHY" ]]; then
+      echo "  unchanged since version $PREV_VERSION — skipping (--force to import anyway)"
+      SKIPPED=$((SKIPPED + 1))
+      if [[ $PUBLISH -eq 1 && $DRY_RUN -eq 0 ]]; then
+        ensure_published "$FORM_NAME" || true
+      fi
+      continue
+    fi
+    echo "  unchanged since version $PREV_VERSION, but ${REDEPLOY_WHY} — redeploying"
   fi
 
   # ---------------------------------------------------------- 0b. next version
@@ -767,13 +871,50 @@ for FILE in "${FILES[@]}"; do
 done
 
 echo
+# Exports are what this script is counted against. Files that were never form
+# exports are reported separately: folding them into the denominator turned
+# "8 forms, all fine" into the alarming "imported 0/76".
+EXPORTS=$(( ${#FILES[@]} - IGNORED ))
+
 if [[ $DRY_RUN -eq 1 ]]; then
-  echo "dry run finished: ${#FILES[@]} file(s) checked, $SKIPPED unchanged, $FAILED with problems"
+  echo "dry run finished: ${EXPORTS} export(s) checked, $SKIPPED unchanged, $FAILED with problems"
 elif [[ $PUBLISH_ONLY -eq 1 ]]; then
-  echo "published $PUBLISHED/${#FILES[@]} form(s); nothing was imported (--publish-only)"
+  echo "published $PUBLISHED/${EXPORTS} form(s); nothing was imported (--publish-only)"
 else
-  echo "imported $IMPORTED/${#FILES[@]} form(s), $SKIPPED unchanged, $PUBLISHED published, $FAILED failed"
+  echo "imported $IMPORTED/${EXPORTS} form(s), $SKIPPED unchanged, $PUBLISHED published, $FAILED failed"
   [[ $IMPORTED -gt 0 ]] && echo "state: $STATE_FILE"
+fi
+
+if [[ $IGNORED -gt 0 ]]; then
+  echo "ignored $IGNORED file(s) in the folder that are not form exports"
+fi
+
+# The one that needs explaining, because it silently breaks two other things:
+# the folder is a git clone, and files the EMR drops into it make that clone
+# dirty — so the nightly refresh stops pulling new forms.
+if [[ $EMR_WRITTEN -gt 0 ]]; then
+  cat <<MSG
+
+  ${EMR_WRITTEN} of those are forms the EMR itself wrote (<form-uuid>.json).
+  They are in the folder this script imports FROM, which is a git clone of the
+  form exports. That is worth fixing rather than living with:
+
+    * it makes the clone permanently dirty, so the nightly refresh reports
+      "SKIP refresh (… has uncommitted local changes)" and NEW FORMS STOP
+      ARRIVING — which looks exactly like the import being broken;
+    * every run re-reads them for nothing.
+
+  They are almost certainly the EMR's own clinical_forms directory showing
+  through a bind mount. Check what the openmrs service mounts there:
+
+    cd <stack dir> && docker compose config | grep -A2 clinical_forms
+
+  If it is bind-mounted onto this folder, point one of the two somewhere else.
+  Otherwise just remove them — the EMR keeps its own copy inside the container:
+
+    git -C ${FORMS_DIR} clean -n '*.json'     # list first
+    git -C ${FORMS_DIR} clean -f  '*.json'    # then delete
+MSG
 fi
 
 exit "$EXIT_CODE"

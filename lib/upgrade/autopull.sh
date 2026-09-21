@@ -97,7 +97,10 @@ for repo in "${REPOS[@]}"; do
     log "SKIP  $repo (detached HEAD; no branch to track)"
     continue
   fi
-  if [ -n "$(git_here -C "$repo" status --porcelain 2>/dev/null)" ]; then
+  # --untracked-files=no: reset --hard cannot destroy an untracked file, so one
+  # is not local work to protect — and a folder the EMR writes into would
+  # otherwise be skipped for ever. Only tracked modifications block a refresh.
+  if [ -n "$(git_here -C "$repo" status --porcelain --untracked-files=no 2>/dev/null)" ]; then
     log "SKIP  $repo (uncommitted local changes; left untouched)"
     rc=1
     continue

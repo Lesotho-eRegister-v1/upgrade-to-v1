@@ -61,6 +61,7 @@ curl -fsSL <raw>/catch-up.sh | sudo EREGISTER_BAHMNI_PASS='…' bash -s -- --yes
 | `--install-dir DIR` | `EREGISTER_INSTALL_BASE` | `/var/lib` |
 | `--no-color` | — | auto |
 
+> [!NOTE]
 > `--no-forms` implies `--no-decode`, `--no-retire-forms` **and** `--no-publish`.
 > `--decode` and `--no-decode` together are an error.
 

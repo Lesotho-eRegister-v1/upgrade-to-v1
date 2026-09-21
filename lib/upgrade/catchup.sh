@@ -176,11 +176,15 @@ _cu_update_repo() { # _cu_update_repo <name> <url> <dir> <ref> <class>
   # Dirty tree, detached HEAD, or a branch other than the one this release pins:
   # all three mean a plain fast-forward is either unsafe or would leave the repo
   # off-release. --force-repos resolves them the way the installer would.
-  if [ -n "$(git_here -C "$dir" status --porcelain 2>/dev/null)" ] \
+  # --untracked-files=no throughout: `git reset --hard` never removes an
+  # untracked file, so one is not local work a fast-forward could destroy.
+  # Counting it as "dirty" is what leaves a clone the EMR writes into frozen at
+  # its deployed commit for ever.
+  if [ -n "$(git_here -C "$dir" status --porcelain --untracked-files=no 2>/dev/null)" ] \
      || [ "$branch" = "HEAD" ] || { [ -n "$ref" ] && [ "$branch" != "$ref" ]; }; then
     local why
-    if [ -n "$(git_here -C "$dir" status --porcelain 2>/dev/null)" ]; then
-      why="uncommitted local changes"
+    if [ -n "$(git_here -C "$dir" status --porcelain --untracked-files=no 2>/dev/null)" ]; then
+      why="uncommitted changes to tracked files"
     elif [ "$branch" = "HEAD" ]; then
       why="detached HEAD"
     else

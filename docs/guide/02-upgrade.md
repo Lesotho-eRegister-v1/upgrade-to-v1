@@ -4,6 +4,7 @@
 0.92 to v1. It is the only script in the toolkit that stops the old stack and
 restores a database.
 
+> [!WARNING]
 > Run it **once** per site. To pick up later changes to these scripts on a site
 > that is already on v1, run `catch-up.sh` — see [chapter 3](03-catch-up.md).
 
@@ -70,6 +71,7 @@ abort the run or trigger a rollback.
 | 3 | *(clinical forms)* | **Deliberately absent** — see §2.5 |
 | 4 | **Auto-pull job** | Offered, then installed |
 
+> [!NOTE]
 > The database backup is installed **first** on purpose. Everything else in this
 > function installs something that will later write to the `openmrs` database on
 > a schedule — the concept dictionary replaces whole tables, the form import
@@ -128,6 +130,7 @@ cannot be retaken at all.
     --force while the 0.92 EMR container is running.
 ```
 
+> [!CAUTION]
 > **`--force` reloads the database from that file, replacing anything entered
 > since it was made.** On a site that has been live on v1 for a while, that is
 > data loss. This is why `catch-up.sh` exists.
@@ -168,6 +171,7 @@ The backup is always preserved. Rollback disarms once `post_verify` succeeds.
 Three imports are cloned but not performed here. The reason is the same in each
 case, and it is worth understanding because it shapes the whole toolkit:
 
+> [!IMPORTANT]
 > **When `install.sh` finishes, the stack has only just been started.**
 > `openmrsdb` answers early, but the OpenMRS instance behind it needs 30+
 > minutes — hours on site hardware — before it is usable.

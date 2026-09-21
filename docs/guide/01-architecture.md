@@ -52,6 +52,7 @@ It proceeds only once **every** module in the list is present, so a
 half-published branch fails here with a message naming the missing file, rather
 than with curl's opaque `(56) … error: 404` somewhere in the middle of a run.
 
+> [!TIP]
 > Override the module location with `EREGISTER_LIB_DIR` — useful for a system
 > install where `lib/` lives somewhere other than beside the script.
 >
@@ -104,6 +105,7 @@ Outside `<base>`:
 /var/log/eregister-*.log                    one log per job
 ```
 
+> [!NOTE]
 > **Why the state files live in `<base>/v1` and not inside the clones:** the
 > auto-pull job runs `git reset --hard` on those clones. A deployment record
 > stored inside one would be wiped by a routine sync.

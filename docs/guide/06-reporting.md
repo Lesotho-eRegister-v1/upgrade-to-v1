@@ -20,6 +20,7 @@ concept dictionary. It earns that difference:
 | Undo | Pre-import dump | Pre-import dump |
 | Who imports it | The daily job, or you | `catch-up.sh` |
 
+> [!WARNING]
 > Importing **replaces** the table rather than merging into it. Report
 > definitions written on this site by hand, and not present in the release, are
 > lost. The pre-import dump is what gets them back.
@@ -74,6 +75,7 @@ sudo cat /var/lib/v1/bahmni-backup/reporting-preimport-<stamp>.sql \
   | sudo docker compose exec -T openmrsdb mysql -uroot -p openmrs
 ```
 
+> [!NOTE]
 > **New reports only appear after the EMR restarts.** The catch-up run's final
 > step does that for you unless `--no-recreate` was passed.
 

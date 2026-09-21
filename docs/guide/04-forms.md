@@ -7,6 +7,7 @@ over the EMR's REST API, so those exports become live forms without anyone
 clicking through the UI. It then does the one thing that button does **not**:
 it publishes the form (§4.5).
 
+> [!IMPORTANT]
 > **`install.sh` does none of this.** The forms deploy over the REST API, and at
 > the moment the upgrade finishes the EMR needs 30+ minutes before it answers
 > one. The entire step — importer, credentials, runner, schedule and the first
@@ -138,6 +139,7 @@ Values are escaped before being interpolated into the SQL: backslashes first
 `no-db` is a `GAP` rather than a `SKIP` on purpose: the forms the release
 replaces are still being offered, and nothing else on the site will retire them.
 
+> [!NOTE]
 > The **nightly** `eregister-form-import` job does not retire. Retiring a form set
 > is a release action, not something that should happen unattended at 03:30.
 
@@ -277,6 +279,7 @@ would ever touch them again. One normal catch-up run now publishes the lot.
 It costs one `GET` per unchanged form, and a `POST` only when there is something
 to fix. A run where everything is already published makes no writes at all.
 
+> [!WARNING]
 > **The flip side is deliberate.** A form you unpublish by hand is published
 > again by the next run. Use `--no-publish` /
 > `EREGISTER_FORM_PUBLISH=0` on a site where that matters.
@@ -367,6 +370,7 @@ sudo ./catch-up.sh --decode
 
 Seconds instead of a full run. See [§3.6](03-catch-up.md#36-decode-only-mode).
 
+> [!NOTE]
 > `--decode` and `--no-decode` are not a toggle pair. `--no-decode` skips this
 > step inside a normal run; `--decode` makes this step the *only* thing the run
 > does. Passing both is an error.

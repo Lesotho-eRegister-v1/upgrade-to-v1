@@ -341,7 +341,7 @@ if [ "$SELF_PULL" = "1" ] && [ -d "$REPO_DIR/.git" ]; then
     log "SKIP  refresh (git cannot read $REPO_DIR — ownership or permissions)"
   elif [ "$branch" = "HEAD" ]; then
     log "SKIP  refresh ($REPO_DIR is on a detached HEAD)"
-  elif [ -n "$(git_here -C "$REPO_DIR" status --porcelain 2>/dev/null)" ]; then
+  elif [ -n "$(git_here -C "$REPO_DIR" status --porcelain --untracked-files=no 2>/dev/null)" ]; then
     log "SKIP  refresh ($REPO_DIR has uncommitted local changes)"
   elif git_here -C "$REPO_DIR" fetch --depth 1 origin "$branch" >>"$LOG" 2>&1 &&
        git_here -C "$REPO_DIR" reset --hard "origin/$branch" >>"$LOG" 2>&1; then
