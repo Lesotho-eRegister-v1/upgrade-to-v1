@@ -192,6 +192,14 @@ IDGEN_RETIRE_REASON="${EREGISTER_IDGEN_RETIRE_REASON:-No longer in use}"
 # users.user_id recorded as the retiring user. 1 is the default admin account.
 IDGEN_RETIRE_BY="${EREGISTER_IDGEN_RETIRE_BY:-1}"
 
+# --- Report group roles (opt-in) ---------------------------------------------
+# The customised ReportsController shows a report group only to a user holding
+# "Reports-<Sub-Group>". --fix-report-roles creates those 14 roles, makes each
+# inherit Reports-App and gives them all to REPORT_ROLES_USER. Off by default.
+# See lib/upgrade/reportroles.sh.
+REPORT_ROLES_FIX="${EREGISTER_REPORT_ROLES_FIX:-0}"   # 1 (or --fix-report-roles) enables it
+REPORT_ROLES_USER="${EREGISTER_REPORT_ROLES_USER:-superman}"
+
 # --- Scheduled concept-dictionary import ------------------------------------
 # A job of its own, separate from the daily form import: it keeps the
 # eregister_concepts_release_v1 clone current and imports the dump it holds into

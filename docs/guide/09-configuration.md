@@ -53,6 +53,7 @@ curl -fsSL <raw>/catch-up.sh | sudo EREGISTER_BAHMNI_PASS='…' bash -s -- --yes
 | `--no-concepts` | `EREGISTER_CATCHUP_DB_CHECK=0` + `EREGISTER_CONCEPT_IMPORT=0` | `1` |
 | `--no-reporting` | `EREGISTER_IMPORT_REPORTING=0` | `1` |
 | `--no-idgen` | `EREGISTER_IDGEN_RETIRE=0` | `1` |
+| `--fix-report-roles` | `EREGISTER_REPORT_ROLES_FIX=1` | `0` |
 | `--no-db-backup` | `EREGISTER_DB_BACKUP=0` | `1` |
 | `--no-compose-up` | `EREGISTER_CATCHUP_COMPOSE_UP=0` | `1` |
 | `--pull-images` | `EREGISTER_CATCHUP_COMPOSE_PULL=1` | `0` |
@@ -188,6 +189,13 @@ See [chapter 4](04-forms.md) for what each one does.
 | `EREGISTER_IDGEN_RETIRE_ID` | `14` |
 | `EREGISTER_IDGEN_RETIRE_REASON` | `No longer in use` |
 | `EREGISTER_IDGEN_RETIRE_BY` | `1` |
+
+Report group roles (`--fix-report-roles`, off by default):
+
+| Variable | Default |
+|---|---|
+| `EREGISTER_REPORT_ROLES_FIX` | `0` |
+| `EREGISTER_REPORT_ROLES_USER` | `superman` |
 
 ## 9.10 Database backups
 

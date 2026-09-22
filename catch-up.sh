@@ -93,7 +93,7 @@
 #   ./catch-up.sh [--decode]
 #   ./catch-up.sh [--yes] [--no-stack] [--no-forms] [--no-retire-forms]
 #                 [--no-publish] [--no-decode] [--no-concepts] [--no-reporting]
-#                 [--no-idgen] [--no-db-backup] [--no-compose-up] [--pull-images]
+#                 [--no-idgen] [--fix-report-roles] [--no-db-backup] [--no-compose-up] [--pull-images]
 #                 [--no-recreate] [--force-repos]
 #                 [--install-dir DIR] [--no-color] [--help]
 #
@@ -140,6 +140,15 @@
 #                    default 14). Use this on a site where that source is still
 #                    wanted: the step RE-ASSERTS, so a hand-made un-retire is
 #                    otherwise undone by the next run.
+#   --fix-report-roles  OPT-IN. Create the 14 Reports-<Sub-Group> roles the
+#                    customised ReportsController requires before it shows a
+#                    report group (without them the Reports dashboard is blank),
+#                    make each inherit Reports-App, and give them all to
+#                    EREGISTER_REPORT_ROLES_USER (default superman). INSERT IGNORE
+#                    throughout, with role/role_role/user_role dumped to
+#                    bahmni-backup first. Users see the roles at next login.
+#                    Also runs `docker compose up -d reports` (the service
+#                    named by EREGISTER_REPORTS_SERVICE) as the very last job.
 #   --no-db-backup   Leave the daily database backup alone: neither install nor
 #                    refresh it, and do not report on the dumps it has taken.
 #   --no-compose-up  Do NOT apply the compose files to the stack. By default the
@@ -195,6 +204,9 @@
 #                                     (default 14; ids are per-site)
 #   EREGISTER_IDGEN_RETIRE_REASON     its retire_reason (default 'No longer in use')
 #   EREGISTER_IDGEN_RETIRE_BY         users.user_id to record (default 1, admin)
+#   EREGISTER_REPORT_ROLES_FIX=1      same as --fix-report-roles
+#   EREGISTER_REPORT_ROLES_USER       user given every report group role
+#                                     (default superman)
 #   EREGISTER_REPORTING_SQL_NAME      import only this file from the reporting
 #                                     clone (default: every *.sql in it)
 #   EREGISTER_REF_REPORTING           its branch (default master)
@@ -223,7 +235,8 @@ BOOTSTRAP_DIR=""   # temp dir holding downloaded modules; cleaned up on EXIT
 # (concepts), the report definition import (reporting — it reuses the DB
 # plumbing in concepts.sh, so that must be sourced first), the scheduled jobs
 # (autopull, dbbackup, forms) and the checks themselves. idgen — the identifier
-# source retirement — reuses that same DB plumbing, so it follows concepts.sh too.
+# source retirement — and reportroles — the opt-in report group roles — reuse
+# that same DB plumbing, so they follow concepts.sh too.
 EREGISTER_MODULES=(
   core/config.sh
   core/logging.sh
@@ -235,6 +248,7 @@ EREGISTER_MODULES=(
   upgrade/concepts.sh
   upgrade/reporting.sh
   upgrade/idgen.sh
+  upgrade/reportroles.sh
   upgrade/autopull.sh
   upgrade/dbbackup.sh
   upgrade/forms.sh
@@ -617,6 +631,10 @@ parse_catchup_args() {
       # Leaves the identifier source in use. Worth spelling out because the step
       # re-asserts: without this, a deliberate un-retire is undone next run.
       --no-idgen)     IDGEN_RETIRE="0" ;;
+      # Opt-in, unlike the writes above: creates the Reports-<Sub-Group> roles
+      # the Reports dashboard needs and gives them to REPORT_ROLES_USER, and
+      # brings the reports service up at the end.
+      --fix-report-roles) REPORT_ROLES_FIX="1" ;;
       --install-dir)  INSTALL_BASE="${2:?--install-dir needs a value}"; shift ;;
       --no-color)     USE_COLOR="no" ;;
       -h|--help)      usage; exit 0 ;;
@@ -670,6 +688,11 @@ banner_catchup() {
   info "update takes effect (--no-compose-up skips it), and the '${EMR_SERVICE}' service is"
   info "recreated at the end so the refreshed config, omods and forms are loaded"
   info "(--no-recreate skips it). The last two are confirmed before they run."
+  if [ "$REPORT_ROLES_FIX" = "1" ]; then
+    info "Also, as asked (--fix-report-roles): the Reports-<Sub-Group> roles are created in"
+    info "'${DB_NAME}' and given to '${REPORT_ROLES_USER}' (backed up first), and"
+    info "'${DOCKER_COMPOSE:-docker compose} up -d ${REPORTS_SERVICE}' runs as the very last job."
+  fi
 }
 
 main "$@"

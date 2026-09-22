@@ -850,6 +850,31 @@ catchup_idgen() {
 }
 
 # -----------------------------------------------------------------------------
+# catchup_report_roles — create the Reports-<Sub-Group> roles, when asked.
+#
+# Opt-in (--fix-report-roles), so "not requested" is a SKIP. 'partial' — no
+# Reports-App role, or no such user — is a GAP: the dashboard is still blank.
+# The heavy lifting is in lib/upgrade/reportroles.sh.
+# -----------------------------------------------------------------------------
+catchup_report_roles() {
+  # fix_report_roles prints its own step banner.
+  # `|| true`: a failed insert is a GAP row, not a reason to lose the report.
+  fix_report_roles || true
+
+  local name="Reports-<Sub-Group>"
+  case "${REPORT_ROLES_STATUS:-}" in
+    fixed)    _cu_row FIXED roles "$name" "${REPORT_ROLES_DETAIL}" ;;
+    already)  _cu_row OK    roles "$name" "${REPORT_ROLES_DETAIL}" ;;
+    disabled) _cu_row SKIP  roles "$name" "${REPORT_ROLES_DETAIL}" ;;
+    declined) _cu_row SKIP  roles "$name" "${REPORT_ROLES_DETAIL}" ;;
+    partial)  _cu_row GAP   roles "$name" "${REPORT_ROLES_DETAIL}" ;;
+    no-db)    _cu_row GAP   roles "$name" "${REPORT_ROLES_DETAIL}" ;;
+    failed)   _cu_row GAP   roles "$name" "${REPORT_ROLES_DETAIL:-the INSERTs failed}" ;;
+    *)        _cu_row GAP   roles "$name" "the step did not report a status" ;;
+  esac
+}
+
+# -----------------------------------------------------------------------------
 # catchup_db_backups — REPORT ONLY: are the nightly dumps actually happening?
 #
 # The schedule row above says a timer exists. This one says the timer is
@@ -1081,6 +1106,39 @@ catchup_stack_up() {
 }
 
 # -----------------------------------------------------------------------------
+# catchup_reports_up — bring up the reports service, with --fix-report-roles.
+#
+#     docker compose up -d <REPORTS_SERVICE>
+#
+# Naming the service starts it even when it sits behind a compose 'reports'
+# profile, which the whole-stack `up -d` above does not. Runs after the EMR
+# reload, so it never races the container that reload is about to replace.
+# -----------------------------------------------------------------------------
+catchup_reports_up() {
+  [ "${REPORT_ROLES_FIX:-0}" = "1" ] || return 0
+  step "Reports service (${REPORTS_SERVICE})"
+
+  if [ ! -d "$RESTORE_DIR" ]; then
+    _cu_row GAP stack "$REPORTS_SERVICE" "no stack directory at ${RESTORE_DIR}"
+    return 0
+  fi
+  if ! _concepts_resolve_compose >/dev/null 2>&1 || [ -z "${DOCKER_COMPOSE:-}" ]; then
+    _cu_row GAP stack "$REPORTS_SERVICE" "docker compose not available on this host"
+    return 0
+  fi
+
+  info "Running: ${DOCKER_COMPOSE} up -d ${REPORTS_SERVICE}  (in ${RESTORE_DIR})"
+  if ! ( cd "$RESTORE_DIR" && as_root $DOCKER_COMPOSE up -d "$REPORTS_SERVICE" ); then
+    error "Could not start the '${REPORTS_SERVICE}' service."
+    _cu_row GAP stack "$REPORTS_SERVICE" "'${DOCKER_COMPOSE} up -d ${REPORTS_SERVICE}' FAILED — check '${DOCKER_COMPOSE} logs ${REPORTS_SERVICE}'"
+    return 1
+  fi
+  success "Reports service '${REPORTS_SERVICE}' is up."
+  _cu_row FIXED stack "$REPORTS_SERVICE" "brought up (--fix-report-roles)"
+  return 0
+}
+
+# -----------------------------------------------------------------------------
 # catchup_recreate_emr — the LAST job: recreate the EMR service so everything
 # refreshed above is actually picked up.
 #
@@ -1245,6 +1303,17 @@ EOF
                       retire_reason = NULL WHERE id = ${IDGEN_RETIRE_ID};"
     Pass --no-idgen afterwards, or the next run retires it again.
 
+  Report group roles — only with --fix-report-roles, which also runs
+  '${DOCKER_COMPOSE:-docker compose} up -d ${REPORTS_SERVICE}' at the end. Users see them at next login:
+      see them:  SELECT u.username, ur.role FROM users u JOIN user_role ur
+                   ON ur.user_id = u.user_id WHERE ur.role LIKE 'Reports-%';
+      undo it:   cd ${RESTORE_DIR} && ${DOCKER_COMPOSE:-docker compose} exec -T ${DB_SERVICE} \\
+                   mysql -u${DB_USER} -p ${DB_NAME} -e "\\
+                   DELETE FROM user_role WHERE role LIKE 'Reports-%' AND role <> 'Reports-App'; \\
+                   DELETE FROM role_role WHERE child_role LIKE 'Reports-%' AND child_role <> 'Reports-App'; \\
+                   DELETE FROM role WHERE role LIKE 'Reports-%' AND role <> 'Reports-App';"
+      or restore: ${BACKUP_DIR}/report-roles-prechange-*.sql
+
   Database backups — nightly (${DB_BACKUP_CRON}), kept ${DB_BACKUP_KEEP} deep:
       take one now: sudo ${DB_BACKUP_RUNNER}
       they live in: ${DB_BACKUP_DIR}
@@ -1293,6 +1362,7 @@ catch_up() {
   catchup_concepts
   catchup_reporting     # the one import catch-up does itself (see the function)
   catchup_idgen         # the other write: retiring the disused identifier source
+  catchup_report_roles  # opt-in (--fix-report-roles): the report group roles
   catchup_db_backups
   catchup_services      # health of the site AS FOUND, before anything is reloaded
   # `|| true` because catch-up.sh runs under `set -e`: this is the only step
@@ -1302,6 +1372,7 @@ catch_up() {
   # `|| true` for the same reason as the line below it.
   catchup_stack_up || true
   catchup_recreate_emr || true   # last job: the EMR picks up everything above
+  catchup_reports_up || true     # --fix-report-roles only: `up -d reports`
   catchup_report
   [ "$CATCHUP_GAPS" -eq 0 ]
 }

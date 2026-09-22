@@ -20,7 +20,7 @@ when there are no gaps**, so it doubles as a monitoring check.
 ./catch-up.sh [--decode]
 ./catch-up.sh [--yes] [--no-stack] [--no-forms] [--no-retire-forms]
               [--no-publish] [--no-decode] [--no-concepts] [--no-reporting]
-              [--no-idgen] [--no-db-backup] [--no-compose-up] [--pull-images]
+              [--no-idgen] [--fix-report-roles] [--no-db-backup] [--no-compose-up] [--pull-images]
               [--no-recreate] [--force-repos]
               [--install-dir DIR] [--no-color] [--help]
 ```
@@ -37,6 +37,7 @@ when there are no gaps**, so it doubles as a monitoring check.
 | `--no-concepts` | Leave the dictionary alone: no DB probe, and the daily job is neither installed nor refreshed |
 | `--no-reporting` | Clone and fast-forward the reporting repo, but do not import it |
 | `--no-idgen` | Do not retire the disused identifier source |
+| `--fix-report-roles` | **Opt-in.** Create the `Reports-<Sub-Group>` roles the Reports dashboard needs and give them to `superman`, then `docker compose up -d reports` at the end |
 | `--no-db-backup` | Leave the nightly backup alone — not installed, refreshed or reported on |
 | `--no-compose-up` | Do not apply the compose files to the stack |
 | `--pull-images` | Add `--pull always` when applying them |
@@ -85,10 +86,12 @@ catch_up()
  ├─  5. catchup_concepts         REPORT ONLY
  ├─  6. catchup_reporting        report definitions (imported here)
  ├─  7. catchup_idgen            retire the disused identifier source
+ ├─ 7b. catchup_report_roles     report group roles (only with --fix-report-roles)
  ├─  8. catchup_db_backups       REPORT ONLY
  ├─  9. catchup_services         health, as found
  ├─ 10. catchup_stack_up         docker compose up -d
  ├─ 11. catchup_recreate_emr     reload the EMR
+ ├─11b. catchup_reports_up       docker compose up -d reports (only with --fix-report-roles)
  └─ 12. catchup_report           the table + verdict
 ```
 
@@ -233,6 +236,39 @@ names what it retired. An id that is not there is a `GAP`, not a quiet pass:
 ```
   ✘ GAP   idgen     source 14        no source with id 14 in openmrs — nothing retired (set EREGISTER_IDGEN_RETIRE_ID, or --no-idgen)
 ```
+
+### Step 7b — Report group roles (opt-in)
+
+Runs only with `--fix-report-roles` (or `EREGISTER_REPORT_ROLES_FIX=1`);
+otherwise it is a `SKIP` row.
+
+The customised `ReportsController` hides every report group unless the logged-in
+user holds a role named `Reports-<Sub-Group>` (spaces → hyphens, exact case).
+Only `Reports-App` existed, so the Reports dashboard rendered blank. The step, in
+the `openmrs` database:
+
+1. creates the 14 group roles (`Reports-HIV`, `Reports-TB`, `Reports-NCDs`,
+   `Reports-Epidemic-Care`, `Reports-Medical-Emergency`, `Reports-Maternal-Health`,
+   `Reports-Reproductive-Health`, `Reports-Child-Health`, `Reports-Mental-Health`,
+   `Reports-Health-Support-Services`, `Reports-Lab`, `Reports-Pharmacy`,
+   `Reports-Supply-Chain`, `Reports-Other`)
+2. makes each inherit `Reports-App` (`role_role`), so a user given only e.g.
+   `Reports-HIV` can still open the Reports app
+3. gives every `Reports-%` role to `EREGISTER_REPORT_ROLES_USER` (default `superman`)
+4. prints how many users hold each role
+
+It is all `INSERT IGNORE`, and it counts what is missing first, so a second run
+changes nothing. Before the first write `role`, `role_role` and `user_role` are
+dumped to `bahmni-backup/report-roles-prechange-*.sql`. A missing `Reports-App`
+role or a missing user is a `GAP`. Per-cadre assignment (nurses → HIV/TB/Other,
+lab → Lab …) is a site decision, left to the admin UI.
+
+Roles are read at login: the EMR reload at the end of the run — or the user
+logging out and back in — is what makes the groups appear.
+
+The same flag also runs `docker compose up -d reports` (the service named by
+`EREGISTER_REPORTS_SERVICE`) as the very last job, after the EMR reload. Naming
+the service starts it even when it sits behind a compose `reports` profile.
 
 ### Step 8 — Database backups (report only)
 
@@ -447,6 +483,7 @@ individually confirmed and each with a flag that skips it:
 | Decode HTML entities in the EMR's form JSON | Textual, idempotent | `--no-decode` |
 | Import the report definitions | Yes — a pre-import dump is taken first | `--no-reporting` |
 | Retire the disused identifier source | Yes — one `UPDATE`, printed by the run | `--no-idgen` |
+| Create the report group roles (**opt-in**) | Yes — tables dumped first; `DELETE`s printed by the run | runs only with `--fix-report-roles` |
 | `docker compose up -d` on the whole stack | Re-runnable; named volumes untouched | `--no-compose-up` |
 | Recreate the EMR service | Re-runnable; 30+ min downtime | `--no-recreate` |
 
