@@ -875,6 +875,29 @@ catchup_report_roles() {
 }
 
 # -----------------------------------------------------------------------------
+# catchup_hie_configs — the MPI client credentials, when asked.
+#
+# Opt-in (--hie-configs), so "not requested" is a SKIP. No facility code, or no
+# running EMR to write into, is a GAP. The work is in lib/upgrade/hieconfigs.sh.
+# -----------------------------------------------------------------------------
+catchup_hie_configs() {
+  # `|| true`: a failed write is a GAP row, not a reason to lose the report.
+  set_hie_configs || true
+
+  local name="MPI credentials"
+  case "${HIE_STATUS:-}" in
+    fixed)    _cu_row FIXED hie "$name" "${HIE_DETAIL}" ;;
+    already)  _cu_row OK    hie "$name" "${HIE_DETAIL}" ;;
+    disabled) _cu_row SKIP  hie "$name" "${HIE_DETAIL}" ;;
+    declined) _cu_row SKIP  hie "$name" "${HIE_DETAIL}" ;;
+    no-code)  _cu_row GAP   hie "$name" "${HIE_DETAIL}" ;;
+    no-emr)   _cu_row GAP   hie "$name" "${HIE_DETAIL}" ;;
+    failed)   _cu_row GAP   hie "$name" "${HIE_DETAIL:-the write failed}" ;;
+    *)        _cu_row GAP   hie "$name" "the step did not report a status" ;;
+  esac
+}
+
+# -----------------------------------------------------------------------------
 # catchup_db_backups — REPORT ONLY: are the nightly dumps actually happening?
 #
 # The schedule row above says a timer exists. This one says the timer is
@@ -1363,6 +1386,7 @@ catch_up() {
   catchup_reporting     # the one import catch-up does itself (see the function)
   catchup_idgen         # the other write: retiring the disused identifier source
   catchup_report_roles  # opt-in (--fix-report-roles): the report group roles
+  catchup_hie_configs   # opt-in (--hie-configs): MPI credentials, before the reload
   catchup_db_backups
   catchup_services      # health of the site AS FOUND, before anything is reloaded
   # `|| true` because catch-up.sh runs under `set -e`: this is the only step

@@ -54,6 +54,7 @@ curl -fsSL <raw>/catch-up.sh | sudo EREGISTER_BAHMNI_PASS='…' bash -s -- --yes
 | `--no-reporting` | `EREGISTER_IMPORT_REPORTING=0` | `1` |
 | `--no-idgen` | `EREGISTER_IDGEN_RETIRE=0` | `1` |
 | `--fix-report-roles` | `EREGISTER_REPORT_ROLES_FIX=1` | `0` |
+| `--hie-configs` | `EREGISTER_HIE_CONFIGS=1` | `0` |
 | `--no-db-backup` | `EREGISTER_DB_BACKUP=0` | `1` |
 | `--no-compose-up` | `EREGISTER_CATCHUP_COMPOSE_UP=0` | `1` |
 | `--pull-images` | `EREGISTER_CATCHUP_COMPOSE_PULL=1` | `0` |
@@ -196,6 +197,14 @@ Report group roles (`--fix-report-roles`, off by default):
 |---|---|
 | `EREGISTER_REPORT_ROLES_FIX` | `0` |
 | `EREGISTER_REPORT_ROLES_USER` | `superman` |
+
+HIE client credentials (`--hie-configs`, off by default):
+
+| Variable | Default |
+|---|---|
+| `EREGISTER_HIE_CONFIGS` | `0` |
+| `EREGISTER_HIE_FACILITY_CODE` | *(prompted; required with `--yes`)* |
+| `EREGISTER_HIE_PROPERTIES` | `/openmrs/data/openmrs-runtime.properties` |
 
 ## 9.10 Database backups
 

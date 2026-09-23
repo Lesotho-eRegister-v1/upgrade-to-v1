@@ -87,6 +87,7 @@ catch_up()
  ├─  6. catchup_reporting        report definitions (imported here)
  ├─  7. catchup_idgen            retire the disused identifier source
  ├─ 7b. catchup_report_roles     report group roles (only with --fix-report-roles)
+ ├─ 7c. catchup_hie_configs      MPI client credentials (only with --hie-configs)
  ├─  8. catchup_db_backups       REPORT ONLY
  ├─  9. catchup_services         health, as found
  ├─ 10. catchup_stack_up         docker compose up -d
@@ -269,6 +270,30 @@ logging out and back in — is what makes the groups appear.
 The same flag also runs `docker compose up -d reports` (the service named by
 `EREGISTER_REPORTS_SERVICE`) as the very last job, after the EMR reload. Naming
 the service starts it even when it sits behind a compose `reports` profile.
+
+### Step 7c — HIE client credentials (opt-in)
+
+Runs only with `--hie-configs` (or `EREGISTER_HIE_CONFIGS=1`); otherwise it is a
+`SKIP` row.
+
+It asks for the site's facility code — or takes `EREGISTER_HIE_FACILITY_CODE`,
+which a `--yes` run needs, since it cannot prompt — and writes the MPI client
+credentials derived from it into `/openmrs/data/openmrs-runtime.properties`
+(`EREGISTER_HIE_PROPERTIES`) inside the EMR container:
+
+```
+registrationcore.mpi.username=pixclient_<facility code, lowercase>
+registrationcore.mpi.password=pixpdq<First letter, uppercase>@2019#Cli3nt
+```
+
+An existing line is replaced, a missing one appended. When both already hold
+those values nothing is written; otherwise the file is first copied to
+`openmrs-runtime.properties.bak-<timestamp>` beside it in the container. No
+facility code, an invalid one (letters, digits, `_` and `-` only), or an EMR
+that is not running is a `GAP`.
+
+OpenMRS reads runtime properties only at startup, so this runs before the EMR
+reload in step 11. With `--no-recreate` the values wait for the next restart.
 
 ### Step 8 — Database backups (report only)
 

@@ -93,7 +93,7 @@
 #   ./catch-up.sh [--decode]
 #   ./catch-up.sh [--yes] [--no-stack] [--no-forms] [--no-retire-forms]
 #                 [--no-publish] [--no-decode] [--no-concepts] [--no-reporting]
-#                 [--no-idgen] [--fix-report-roles] [--no-db-backup] [--no-compose-up] [--pull-images]
+#                 [--no-idgen] [--fix-report-roles] [--hie-configs] [--no-db-backup] [--no-compose-up] [--pull-images]
 #                 [--no-recreate] [--force-repos]
 #                 [--install-dir DIR] [--no-color] [--help]
 #
@@ -149,6 +149,13 @@
 #                    bahmni-backup first. Users see the roles at next login.
 #                    Also runs `docker compose up -d reports` (the service
 #                    named by EREGISTER_REPORTS_SERVICE) as the very last job.
+#   --hie-configs    OPT-IN. Ask for the facility code (or take
+#                    EREGISTER_HIE_FACILITY_CODE) and write the MPI client
+#                    credentials derived from it — registrationcore.mpi.username
+#                    and .password — into openmrs-runtime.properties in the EMR
+#                    container, backing the file up there first. Does nothing
+#                    when both already match. Loaded by the EMR reload at the
+#                    end (or its next restart, with --no-recreate).
 #   --no-db-backup   Leave the daily database backup alone: neither install nor
 #                    refresh it, and do not report on the dumps it has taken.
 #   --no-compose-up  Do NOT apply the compose files to the stack. By default the
@@ -207,6 +214,11 @@
 #   EREGISTER_REPORT_ROLES_FIX=1      same as --fix-report-roles
 #   EREGISTER_REPORT_ROLES_USER       user given every report group role
 #                                     (default superman)
+#   EREGISTER_HIE_CONFIGS=1           same as --hie-configs
+#   EREGISTER_HIE_FACILITY_CODE       facility code for it (else prompted; required
+#                                     with --yes)
+#   EREGISTER_HIE_PROPERTIES          file it edits inside the EMR container
+#                                     (default /openmrs/data/openmrs-runtime.properties)
 #   EREGISTER_REPORTING_SQL_NAME      import only this file from the reporting
 #                                     clone (default: every *.sql in it)
 #   EREGISTER_REF_REPORTING           its branch (default master)
@@ -249,6 +261,7 @@ EREGISTER_MODULES=(
   upgrade/reporting.sh
   upgrade/idgen.sh
   upgrade/reportroles.sh
+  upgrade/hieconfigs.sh
   upgrade/autopull.sh
   upgrade/dbbackup.sh
   upgrade/forms.sh
@@ -635,6 +648,9 @@ parse_catchup_args() {
       # the Reports dashboard needs and gives them to REPORT_ROLES_USER, and
       # brings the reports service up at the end.
       --fix-report-roles) REPORT_ROLES_FIX="1" ;;
+      # Opt-in: the MPI client credentials for this facility, written into the
+      # EMR's runtime properties before the reload so it picks them up.
+      --hie-configs)  HIE_CONFIGS="1" ;;
       --install-dir)  INSTALL_BASE="${2:?--install-dir needs a value}"; shift ;;
       --no-color)     USE_COLOR="no" ;;
       -h|--help)      usage; exit 0 ;;
@@ -692,6 +708,10 @@ banner_catchup() {
     info "Also, as asked (--fix-report-roles): the Reports-<Sub-Group> roles are created in"
     info "'${DB_NAME}' and given to '${REPORT_ROLES_USER}' (backed up first), and"
     info "'${DOCKER_COMPOSE:-docker compose} up -d ${REPORTS_SERVICE}' runs as the very last job."
+  fi
+  if [ "$HIE_CONFIGS" = "1" ]; then
+    info "Also, as asked (--hie-configs): the MPI client credentials for this facility are"
+    info "written into ${HIE_PROPERTIES} in the '${EMR_SERVICE}' container (backed up first)."
   fi
 }
 

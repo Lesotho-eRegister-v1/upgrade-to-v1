@@ -200,6 +200,14 @@ IDGEN_RETIRE_BY="${EREGISTER_IDGEN_RETIRE_BY:-1}"
 REPORT_ROLES_FIX="${EREGISTER_REPORT_ROLES_FIX:-0}"   # 1 (or --fix-report-roles) enables it
 REPORT_ROLES_USER="${EREGISTER_REPORT_ROLES_USER:-superman}"
 
+# --- HIE client credentials (opt-in) -----------------------------------------
+# --hie-configs writes registrationcore.mpi.username/password, derived from the
+# facility code, into the EMR's openmrs-runtime.properties. Off by default; the
+# code is prompted for unless HIE_FACILITY_CODE is set. See lib/upgrade/hieconfigs.sh.
+HIE_CONFIGS="${EREGISTER_HIE_CONFIGS:-0}"              # 1 (or --hie-configs) enables it
+HIE_FACILITY_CODE="${EREGISTER_HIE_FACILITY_CODE:-}"
+HIE_PROPERTIES="${EREGISTER_HIE_PROPERTIES:-/openmrs/data/openmrs-runtime.properties}"
+
 # --- Scheduled concept-dictionary import ------------------------------------
 # A job of its own, separate from the daily form import: it keeps the
 # eregister_concepts_release_v1 clone current and imports the dump it holds into
