@@ -38,7 +38,18 @@ _hie_get() {
   _hie_exec sh -c 'grep -m1 "^$1=" "$2" | cut -d= -f2-' _ "$1" "$HIE_PROPERTIES" 2>/dev/null
 }
 
-# _hie_read_facility_code — HIE_FACILITY_CODE from the env, else from /dev/tty
+# _hie_show <heading> — the two MPI lines as they now stand in HIE_PROPERTIES,
+# read back from the file itself rather than echoed from what we meant to write.
+_hie_show() {
+  local k
+  printf '\n%s%s%s\n' "$C_BOLD" "$1" "$C_RESET" >&2
+  for k in registrationcore.mpi.username registrationcore.mpi.password; do
+    printf '  %s=%s\n' "$k" "$(_hie_get "$k")" >&2
+  done
+  printf '\n' >&2
+}
+
+# _hie_read_facility_code —HIE_FACILITY_CODE from the env, else from /dev/tty
 # (stdin is the script itself when piped into bash). Returns 1 when there is no
 # way to ask.
 _hie_read_facility_code() {
@@ -111,6 +122,7 @@ set_hie_configs() {
   cur_pass="$(_hie_get registrationcore.mpi.password)"
   if [ "$cur_user" = "$user" ] && [ "$cur_pass" = "$pass" ]; then
     info "Already set for facility '${code}'."
+    _hie_show "HIE username and password already in place:"
     HIE_STATUS="already"; HIE_DETAIL="MPI client '${user}' already configured"
     return 0
   fi
@@ -151,8 +163,7 @@ set_hie_configs() {
     return 1
   fi
 
-  info "Updated configuration:"
-  _hie_exec grep -E '^registrationcore\.mpi\.(username|password)=' "$HIE_PROPERTIES" >&2 || true
+  _hie_show "HIE username and password added are now:"
   success "MPI client credentials set for facility '${code}'. The EMR reads them at its next start."
   HIE_STATUS="fixed"; HIE_DETAIL="set to '${user}' (backup ${HIE_PROPERTIES}.bak-* in the container)"
   return 0
