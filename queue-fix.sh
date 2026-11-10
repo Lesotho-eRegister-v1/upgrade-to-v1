@@ -8,10 +8,12 @@
 #   "No such query:emrapi.sqlSearch.queue.activePatients".
 # They are lost when the openmrs DB is restored from a dump that lacks them.
 #
-# Runs from any directory (e.g. ~). Backs up the emrapi.sqlSearch.* rows first.
+# Runs from any directory (e.g. ~), or straight from GitHub (it then downloads
+# its two .sql files). Backs up the emrapi.sqlSearch.* rows first.
 # Safe to re-run (idempotent).
 #
 # USAGE
+#   curl -fsSL --retry 8 --retry-max-time 180 <raw>/queue-fix.sh | bash -s -- --check
 #   ~/upgrade-to-v1/queue-fix.sh            # check, back up, apply, verify
 #   ~/upgrade-to-v1/queue-fix.sh --check    # only report what is missing
 #   ~/upgrade-to-v1/queue-fix.sh --rollback # delete the queue rows again
@@ -25,14 +27,23 @@
 #   EREGISTER_DB_NAME     database           (default openmrs)
 #   EREGISTER_DB_PASS     mysql root password (else the container's MYSQL_ROOT_PASSWORD)
 #   EREGISTER_EMR_SERVICE openmrs compose service (default openmrs)
+#   EREGISTER_BACKUP_DIR  where backups go (default <script dir>/backups, or
+#                         ~/upgrade-to-v1-backups when run via curl | bash)
+#   EREGISTER_RAW_BASE    raw GitHub base for downloading the .sql files
 ###############################################################################
 
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-FIX_SQL="$SCRIPT_DIR/fix_queue_sqlsearch.sql"
-ROLLBACK_SQL="$SCRIPT_DIR/rollback_queue_sqlsearch.sql"
-BACKUP_DIR="$SCRIPT_DIR/backups"
+EREGISTER_RAW_BASE="${EREGISTER_RAW_BASE:-https://raw.githubusercontent.com/Lesotho-eRegister-v1/upgrade-to-v1/refs/heads/main}"
+SQL_FILES=(fix_queue_sqlsearch.sql rollback_queue_sqlsearch.sql)
+
+# When piped into bash there is no script file: BASH_SOURCE[0] is empty and
+# stdin is the script itself (so prompts read /dev/tty, never stdin).
+SELF="${BASH_SOURCE[0]:-}"
+SCRIPT_DIR=""; BOOTSTRAP_DIR=""
+if [[ -n "$SELF" && -f "$SELF" ]]; then
+  SCRIPT_DIR="$(cd "$(dirname "$SELF")" && pwd)"
+fi
 DB_SERVICE="${EREGISTER_DB_SERVICE:-openmrsdb}"
 DB_NAME="${EREGISTER_DB_NAME:-openmrs}"
 EXPECTED=3
@@ -49,7 +60,10 @@ for arg in "$@"; do
     --rollback) MODE=rollback ;;
     --fix-gp) MODE=fixgp ;;
     --yes|-y) ASSUME_YES=1 ;;
-    --help|-h) sed -n '2,29p' "$0"; exit 0 ;;
+    --help|-h)
+      if [[ -n "$SCRIPT_DIR" ]]; then sed -n '2,36p' "$SELF"
+      else echo "Usage: ... | bash -s -- [--check|--rollback|--fix-gp] [--yes]   (see QUEUE_FIX.md)"; fi
+      exit 0 ;;
     *) echo "Unknown option: $arg (see --help)" >&2; exit 2 ;;
   esac
 done
@@ -57,8 +71,28 @@ done
 die() { echo "ERROR: $*" >&2; exit 1; }
 info() { echo "==> $*"; }
 
-[[ -f "$FIX_SQL" ]] || die "missing $FIX_SQL"
-[[ -f "$ROLLBACK_SQL" ]] || die "missing $ROLLBACK_SQL"
+cleanup() { [[ -n "$BOOTSTRAP_DIR" ]] && rm -rf "$BOOTSTRAP_DIR"; return 0; }
+trap cleanup EXIT
+
+SQL_DIR="$SCRIPT_DIR"
+if [[ -z "$SQL_DIR" || ! -f "$SQL_DIR/${SQL_FILES[0]}" || ! -f "$SQL_DIR/${SQL_FILES[1]}" ]]; then
+  command -v curl >/dev/null || die "curl required to download the .sql files"
+  BOOTSTRAP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/eregister-queuefix.XXXXXX")"
+  info "Downloading SQL files from $EREGISTER_RAW_BASE ..."
+  for f in "${SQL_FILES[@]}"; do
+    curl -fsSL --retry 6 --retry-max-time 120 --connect-timeout 15 \
+      "$EREGISTER_RAW_BASE/$f" -o "$BOOTSTRAP_DIR/$f" </dev/null || die "could not download $EREGISTER_RAW_BASE/$f"
+  done
+  SQL_DIR="$BOOTSTRAP_DIR"
+fi
+FIX_SQL="$SQL_DIR/fix_queue_sqlsearch.sql"
+ROLLBACK_SQL="$SQL_DIR/rollback_queue_sqlsearch.sql"
+grep -q "emrapi.sqlSearch.queue.activePatientsByLocation" "$FIX_SQL" || die "$FIX_SQL does not look right"
+
+if [[ -n "${EREGISTER_BACKUP_DIR:-}" ]]; then BACKUP_DIR="$EREGISTER_BACKUP_DIR"
+elif [[ -n "$SCRIPT_DIR" ]]; then BACKUP_DIR="$SCRIPT_DIR/backups"
+else BACKUP_DIR="$HOME/upgrade-to-v1-backups"; fi
+
 command -v docker >/dev/null || die "docker not found"
 
 DB_CONTAINER="$(docker ps --filter "label=com.docker.compose.service=$DB_SERVICE" --format '{{.Names}}' | head -1)"
@@ -82,7 +116,9 @@ gp_count() {
 
 confirm() {
   [[ $ASSUME_YES -eq 1 ]] && return 0
-  read -r -p "$1 [y/N] " ans
+  { : </dev/tty; } 2>/dev/null || die "no terminal to confirm on; re-run with --yes"
+  printf '%s [y/N] ' "$1" >/dev/tty
+  read -r ans </dev/tty || ans=""
   [[ "$ans" =~ ^[Yy]$ ]] || { echo "Aborted."; exit 1; }
 }
 
