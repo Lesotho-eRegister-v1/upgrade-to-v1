@@ -858,6 +858,31 @@ for `--yes` if the credentials file is missing), `EREGISTER_UPGRADE_REPO`,
 > The monitoring/cron use above should carry `--no-recreate`. Left on, every
 > scheduled run would recreate the EMR and take it down for half an hour.
 
+# Stack passwords: `.env.secrets`
+
+bahmni-docker-ls keeps its passwords out of Git. `.env` and `.env.dev` hold only
+`CHANGE_ME`, and the stack reads the real values from
+`<base>/v1/bahmni-docker-ls/bahmni-standard/.env.secrets` (root, mode 600). Its
+`docker-compose.yml` marks them required, so without that file the restore,
+`run-bahmni.sh` and every `docker compose` call in that directory fail with:
+
+    ERROR - .env.secrets not found. Copy .env.secrets.example and fill it in.
+
+`install.sh` (before the restore) and `catch-up.sh` (after updating the repos)
+create the file when it is missing. They never overwrite an existing one. Each
+value comes from whatever this site already runs with:
+
+1. `EREGISTER_ENV_SECRETS_FILE=/path/to/file`: an operator-prepared file, copied as is;
+2. the v1 stack's containers, running or stopped;
+3. the frozen 0.92 stack: its containers, then `$EREGISTER_OLD_DOCKER_DIR/.env`;
+4. otherwise a random value, but only for a database that has no volume yet.
+   `MAIL_PASSWORD` / `SMS_TOKEN` are left empty.
+
+If a database volume already exists but no container still holds its password,
+the step **stops** rather than lock that database out. Write the file yourself
+from `.env.secrets.example` with the values the volumes were created with (before
+bahmni-docker-ls `919e8dd` they were in `.env`), `chmod 600` it, and re-run.
+
 # Troubleshooting: `curl: (22) The requested URL returned error: 503`
 
 That is **raw.githubusercontent.com**, not your server and not the upgrade. The

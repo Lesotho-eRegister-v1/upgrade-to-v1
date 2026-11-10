@@ -973,12 +973,12 @@ catchup_services() {
   fi
 
   local rows total=0 up=0 line name state status
-  rows="$( ( cd "$RESTORE_DIR" && as_root $DOCKER_COMPOSE ps --format '{{.Service}}|{{.State}}|{{.Status}}' 2>/dev/null ) || true )"
+  rows="$( ( cd "$RESTORE_DIR" && v1_compose ps --format '{{.Service}}|{{.State}}|{{.Status}}' 2>/dev/null ) || true )"
 
   if [ -z "$rows" ]; then
     # Older compose builds have no Go-template support for ps; fall back to the
     # plain table so the operator still sees something real.
-    rows="$( ( cd "$RESTORE_DIR" && as_root $DOCKER_COMPOSE ps 2>/dev/null ) || true )"
+    rows="$( ( cd "$RESTORE_DIR" && v1_compose ps 2>/dev/null ) || true )"
     if [ -n "$rows" ]; then
       log "$rows"
       _cu_row OK services "compose ps" "printed above (this compose build has no --format support)"
@@ -1099,16 +1099,16 @@ catchup_stack_up() {
   # compose releases, while an id that is gone is unambiguously a container that
   # was replaced. `-a` so a service that was stopped and is now running counts.
   local before after replaced=0
-  before="$( cd "$RESTORE_DIR" && as_root $DOCKER_COMPOSE ps -a -q 2>/dev/null | sort )" || before=""
+  before="$( cd "$RESTORE_DIR" && v1_compose ps -a -q 2>/dev/null | sort )" || before=""
 
   info "Running: ${DOCKER_COMPOSE} up -d${pull_note}  (in ${RESTORE_DIR})"
-  if ! ( cd "$RESTORE_DIR" && as_root $DOCKER_COMPOSE up -d ${pull[@]+"${pull[@]}"} ); then
+  if ! ( cd "$RESTORE_DIR" && v1_compose up -d ${pull[@]+"${pull[@]}"} ); then
     _cu_row GAP stack "compose up" "'${DOCKER_COMPOSE} up -d' FAILED — check '${DOCKER_COMPOSE} ps' and the service logs"
     error "Could not apply the compose files in ${RESTORE_DIR}."
     return 1
   fi
 
-  after="$( cd "$RESTORE_DIR" && as_root $DOCKER_COMPOSE ps -a -q 2>/dev/null | sort )" || after=""
+  after="$( cd "$RESTORE_DIR" && v1_compose ps -a -q 2>/dev/null | sort )" || after=""
   # Ids in 'after' that were not in 'before' are containers this run created.
   # `|| true`: grep -c exits 1 on no matches, and "nothing changed" is the
   # normal, good outcome here.
@@ -1151,7 +1151,7 @@ catchup_reports_up() {
   fi
 
   info "Running: ${DOCKER_COMPOSE} up -d ${REPORTS_SERVICE}  (in ${RESTORE_DIR})"
-  if ! ( cd "$RESTORE_DIR" && as_root $DOCKER_COMPOSE up -d "$REPORTS_SERVICE" ); then
+  if ! ( cd "$RESTORE_DIR" && v1_compose up -d "$REPORTS_SERVICE" ); then
     error "Could not start the '${REPORTS_SERVICE}' service."
     _cu_row GAP stack "$REPORTS_SERVICE" "'${DOCKER_COMPOSE} up -d ${REPORTS_SERVICE}' FAILED — check '${DOCKER_COMPOSE} logs ${REPORTS_SERVICE}'"
     return 1
@@ -1208,7 +1208,7 @@ catchup_recreate_emr() {
   fi
 
   info "Running: ${DOCKER_COMPOSE} up -d --force-recreate --renew-anon-volumes ${EMR_SERVICE}"
-  if ( cd "$RESTORE_DIR" && as_root $DOCKER_COMPOSE up -d --force-recreate --renew-anon-volumes "$EMR_SERVICE" ); then
+  if ( cd "$RESTORE_DIR" && v1_compose up -d --force-recreate --renew-anon-volumes "$EMR_SERVICE" ); then
     _cu_row FIXED reload "$EMR_SERVICE" "recreated with renewed anonymous volumes — booting now"
     success "'${EMR_SERVICE}' recreated. It is booting; give it 30+ minutes before use."
     CATCHUP_EMR_RECREATED=1
@@ -1356,6 +1356,22 @@ EOF
 # catch_up — orchestrator. Returns non-zero when gaps remain, so it can be used
 # as a monitoring check (`catch-up.sh --yes; echo $?`).
 # -----------------------------------------------------------------------------
+# catchup_env_secrets — the stack passwords bahmni-docker-ls now keeps in
+# .env.secrets. Every compose call below needs them, so this runs right after
+# the repos are brought up to date (which is when a site first receives the
+# split). Creating the file is the only write; an existing one is left alone.
+catchup_env_secrets() {
+  local secrets="${RESTORE_DIR}/.env.secrets" had=0
+  as_root test -f "$secrets" && had=1
+  if ! ensure_env_secrets; then
+    _cu_row GAP stack ".env.secrets" "missing — copy ${secrets}.example to ${secrets}, fill it in, chmod 600"
+  elif [ "$had" = "1" ] || [ ! -f "${secrets}.example" ]; then
+    _cu_row OK stack ".env.secrets" "present"
+  else
+    _cu_row FIXED stack ".env.secrets" "created from .env.dev (check MAIL_PASSWORD / SMS_TOKEN)"
+  fi
+}
+
 catch_up() {
   # Phase 1 (updating this repo) happened in catch-up.sh before these modules
   # even existed, so it hands its outcome over in the environment.
@@ -1371,6 +1387,7 @@ catch_up() {
   # the JSON in the EMR container. The self-update row above is kept: it already
   # happened in phase 1, and a run that quietly updated itself should say so.
   if [ "${CATCHUP_DECODE_ONLY:-0}" = "1" ]; then
+    catchup_env_secrets   # the decode runs through `compose exec`
     step "Clinical observation forms (decode only)"
     _cu_forms_decode
     catchup_report
@@ -1379,6 +1396,7 @@ catch_up() {
   fi
 
   catchup_repos
+  catchup_env_secrets   # after the repos: a bahmni-docker-ls update brings the split
   catchup_helper_scripts
   catchup_schedules
   catchup_forms

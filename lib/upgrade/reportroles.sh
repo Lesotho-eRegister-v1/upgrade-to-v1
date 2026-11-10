@@ -126,7 +126,7 @@ _rr_backup() {
   out="${BACKUP_DIR}/report-roles-prechange-$(date '+%Y%m%d_%H%M%S').sql"
   info "Backing up role, role_role and user_role -> ${out}"
   # shellcheck disable=SC2086  # $DOCKER_COMPOSE may be two words
-  if ( cd "$RESTORE_DIR" && as_root $DOCKER_COMPOSE exec -T "$DB_SERVICE" \
+  if ( cd "$RESTORE_DIR" && v1_compose exec -T "$DB_SERVICE" \
          sh -c 'pw="${3:-$MYSQL_ROOT_PASSWORD}"; user="$1"; db="$2"; shift 3
                 exec mysqldump -u"$user" ${pw:+-p"$pw"} --single-transaction --no-tablespaces --skip-add-locks --complete-insert "$db" "$@"' \
             _ "$DB_USER" "$DB_NAME" "$DB_PASS" role role_role user_role ) | as_root tee "$out" >/dev/null \

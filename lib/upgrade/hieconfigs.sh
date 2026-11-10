@@ -30,7 +30,7 @@
 # _hie_exec <cmd...> — run a command inside the EMR service's container.
 _hie_exec() {
   # shellcheck disable=SC2086  # $DOCKER_COMPOSE may be two words
-  ( cd "$RESTORE_DIR" && as_root $DOCKER_COMPOSE exec -T "$EMR_SERVICE" "$@" )
+  ( cd "$RESTORE_DIR" && v1_compose exec -T "$EMR_SERVICE" "$@" )
 }
 
 # _hie_get <key> — the current value of <key> in HIE_PROPERTIES (empty if unset).

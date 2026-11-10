@@ -775,7 +775,7 @@ REMOTE
 
   info "Decoding HTML entities in ${EMR_SERVICE}:${FORM_DECODE_DIR} (up to ${FORM_DECODE_MAX_PASSES} passes) …"
   out="$( cd "$RESTORE_DIR" && printf '%s' "$script" \
-          | as_root $DOCKER_COMPOSE exec -T "$EMR_SERVICE" \
+          | v1_compose exec -T "$EMR_SERVICE" \
               sh -s -- "$FORM_DECODE_DIR" "$FORM_DECODE_MAX_PASSES" 2>&1 )" || rc=$?
   # An `if`, not `[ -n … ] && log …`: as the value of the last statement that
   # would make the function return non-zero on a silent run, under `set -e`.

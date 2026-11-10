@@ -26,7 +26,7 @@ _ocl_resolve_compose() {
 _ocl_service_up() {
   # _ocl_service_up <service>  -> 0 if the compose service reports up/running.
   local svc="$1" out
-  out="$( cd "$RESTORE_DIR" && as_root $DOCKER_COMPOSE ps "$svc" 2>/dev/null )" || return 1
+  out="$( cd "$RESTORE_DIR" && v1_compose ps "$svc" 2>/dev/null )" || return 1
   printf '%s' "$out" | grep -Eqi 'up|running'
 }
 
@@ -35,7 +35,7 @@ _ocl_run_sql() {
   # password is taken from EREGISTER_DB_PASS if set, else the container's own
   # MYSQL_ROOT_PASSWORD (never placed on a host process list). One session, so
   # the TEMPORARY table survives across the statements.
-  ( cd "$RESTORE_DIR" && as_root $DOCKER_COMPOSE exec -T "$DB_SERVICE" \
+  ( cd "$RESTORE_DIR" && v1_compose exec -T "$DB_SERVICE" \
       sh -c 'pw="${3:-$MYSQL_ROOT_PASSWORD}"; exec mysql -u"$1" ${pw:+-p"$pw"} "$2"' \
          _ "$DB_USER" "$DB_NAME" "$DB_PASS" ) <<'SQL'
 -- Unvoid original concept names and void OCL's replacements.
@@ -69,7 +69,7 @@ SQL
 _ocl_rename_zips() {
   # Rename every CIEL_*.zip (not already .DONE) in the OCL dir of the EMR
   # service, so the OCL import is skipped on the next startup.
-  ( cd "$RESTORE_DIR" && as_root $DOCKER_COMPOSE exec -T "$EMR_SERVICE" \
+  ( cd "$RESTORE_DIR" && v1_compose exec -T "$EMR_SERVICE" \
       sh -c '
         dir="$1"
         cd "$dir" 2>/dev/null || { echo "OCL dir not found: $dir" >&2; exit 0; }

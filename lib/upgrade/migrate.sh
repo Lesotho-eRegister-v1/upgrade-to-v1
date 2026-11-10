@@ -41,6 +41,10 @@ run_restore() {
   step "Restoring data into v1"
   local restore_script="${RESTORE_DIR}/restore_bahmni_standard.sh"
 
+  # restore_bahmni_standard.sh refuses to run without .env.secrets, and the
+  # database containers it starts are initialised from those values.
+  if [ -d "$RESTORE_DIR" ]; then ensure_env_secrets || return 1; fi
+
   # No backup was taken (no old EMR container — a fresh install). There is
   # nothing to migrate, so we still ATTEMPT the restore (an existing dump, if
   # any, is honored) but never abort: missing artifacts or a restore error only
@@ -74,6 +78,8 @@ start_v1_stack() {
   # 'if' so a non-zero exit triggers the fallback instead of the ERR trap.
   step "Starting eRegister ${TARGET_VERSION}"
   local run_script="${RESTORE_DIR}/run-bahmni.sh" started=0
+  # Normally already done by run_restore; repeated for a run that skipped it.
+  ensure_env_secrets || return 1
   if [ -f "$run_script" ]; then
     as_root chmod +x "$run_script" || true
     info "Launching via run-bahmni.sh…"
@@ -87,7 +93,7 @@ start_v1_stack() {
     warn "run-bahmni.sh not found in ${RESTORE_DIR}; using '${DOCKER_COMPOSE} up -d'."
   fi
   if [ "$started" != "1" ]; then
-    ( cd "$RESTORE_DIR" && as_root $DOCKER_COMPOSE up -d )
+    ( cd "$RESTORE_DIR" && v1_compose up -d )
     success "eRegister ${TARGET_VERSION} started via docker compose."
   fi
   # Read by next_steps: only a run that started the stack may say so.
@@ -102,7 +108,7 @@ start_reports_service() {
   # Naming the service explicitly on the CLI enables it even when it's gated
   # behind a compose 'reports' profile. Non-fatal: a failure only warns.
   info "Starting the reports service (${REPORTS_SERVICE})…"
-  if ( cd "$RESTORE_DIR" && as_root $DOCKER_COMPOSE up -d "$REPORTS_SERVICE" ); then
+  if ( cd "$RESTORE_DIR" && v1_compose up -d "$REPORTS_SERVICE" ); then
     success "Reports service '${REPORTS_SERVICE}' started."
   else
     warn "Could not start reports service '${REPORTS_SERVICE}'; start it manually with '${DOCKER_COMPOSE} up -d ${REPORTS_SERVICE}'."
