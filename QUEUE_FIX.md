@@ -6,7 +6,28 @@
 
 **Fix:** re-insert the 3 rows from the 2026-11-06 dump (`fix_queue_sqlsearch.sql`). It is idempotent and safe to re-run.
 
-## Quick way (from any directory, e.g. `~`)
+## Straight from GitHub (no clone needed)
+
+```bash
+# report only
+curl -fsSL --retry 8 --retry-max-time 180 https://raw.githubusercontent.com/Lesotho-eRegister-v1/upgrade-to-v1/refs/heads/main/queue-fix.sh | bash -s -- --check
+
+# back up, re-insert the 3 queue rows, verify
+curl -fsSL --retry 8 --retry-max-time 180 https://raw.githubusercontent.com/Lesotho-eRegister-v1/upgrade-to-v1/refs/heads/main/queue-fix.sh | bash
+
+# Notifications tab: reload gp_clinical.xml (RESTARTS OpenMRS)
+curl -fsSL --retry 8 --retry-max-time 180 https://raw.githubusercontent.com/Lesotho-eRegister-v1/upgrade-to-v1/refs/heads/main/queue-fix.sh | bash -s -- --fix-gp
+
+# undo the queue rows
+curl -fsSL --retry 8 --retry-max-time 180 https://raw.githubusercontent.com/Lesotho-eRegister-v1/upgrade-to-v1/refs/heads/main/queue-fix.sh | bash -s -- --rollback
+```
+
+The script downloads its two `.sql` files from the same repo and still asks before changing anything. Add
+`--yes` after `--` to skip the prompt, e.g. `| bash -s -- --yes`. Run as a user that can use `docker`; if that
+needs root, use `| sudo bash -s -- ...`. Backups go to `~/upgrade-to-v1-backups/`, or to `/root/upgrade-to-v1-backups/`
+under sudo. Set `EREGISTER_BACKUP_DIR` to put them somewhere else.
+
+## From a clone (any directory, e.g. `~`)
 
 ```bash
 ~/upgrade-to-v1/queue-fix.sh --check     # to check the status, if it's 0/3 you need to run the fix
