@@ -12,10 +12,10 @@
 # Safe to re-run (idempotent).
 #
 # USAGE
-#   ~/bahmniDev/upgrade-to-v1/queue-fix.sh            # check, back up, apply, verify
-#   ~/bahmniDev/upgrade-to-v1/queue-fix.sh --check    # only report what is missing
-#   ~/bahmniDev/upgrade-to-v1/queue-fix.sh --rollback # delete the queue rows again
-#   ~/bahmniDev/upgrade-to-v1/queue-fix.sh --fix-gp   # reload gp_clinical.xml via Initializer
+#   ~/upgrade-to-v1/queue-fix.sh            # check, back up, apply, verify
+#   ~/upgrade-to-v1/queue-fix.sh --check    # only report what is missing
+#   ~/upgrade-to-v1/queue-fix.sh --rollback # delete the queue rows again
+#   ~/upgrade-to-v1/queue-fix.sh --fix-gp   # reload gp_clinical.xml via Initializer
 #        (labResultNotifications = Notifications tab, emergencyMedicationToAcknowledge).
 #        Deletes Initializer's stale gp_clinical.checksum and RESTARTS OpenMRS (downtime).
 #   add --yes to skip the confirmation prompt

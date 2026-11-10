@@ -9,10 +9,10 @@
 ## Quick way (from any directory, e.g. `~`)
 
 ```bash
-~/bahmniDev/upgrade-to-v1/queue-fix.sh --check     # report only
-~/bahmniDev/upgrade-to-v1/queue-fix.sh             # back up to ./backups/, apply, verify
-~/bahmniDev/upgrade-to-v1/queue-fix.sh --rollback  # undo
-~/bahmniDev/upgrade-to-v1/queue-fix.sh --fix-gp    # Notifications tab: reload gp_clinical.xml (RESTARTS OpenMRS)
+~/upgrade-to-v1/queue-fix.sh --check     # report only
+~/upgrade-to-v1/queue-fix.sh             # back up to ./backups/, apply, verify
+~/upgrade-to-v1/queue-fix.sh --rollback  # undo
+~/upgrade-to-v1/queue-fix.sh --fix-gp    # Notifications tab: reload gp_clinical.xml (RESTARTS OpenMRS)
 ```
 
 `--fix-gp` handles a second restore problem. Initializer keeps a checksum of
@@ -27,7 +27,7 @@ properties; the saved checksum is in `backups/`.
 Run every block from this folder on the Docker host:
 
 ```bash
-cd /home/kgatman/bahmniDev/upgrade-to-v1
+cd ~/upgrade-to-v1
 DB=bahmni-standard-openmrsdb-1
 ```
 
