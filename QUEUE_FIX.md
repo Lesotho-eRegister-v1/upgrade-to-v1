@@ -6,6 +6,24 @@
 
 **Fix:** re-insert the 3 rows from the 2026-11-06 dump (`fix_queue_sqlsearch.sql`). It is idempotent and safe to re-run.
 
+## Quick way (from any directory, e.g. `~`)
+
+```bash
+~/bahmniDev/upgrade-to-v1/queue-fix.sh --check     # report only
+~/bahmniDev/upgrade-to-v1/queue-fix.sh             # back up to ./backups/, apply, verify
+~/bahmniDev/upgrade-to-v1/queue-fix.sh --rollback  # undo
+~/bahmniDev/upgrade-to-v1/queue-fix.sh --fix-gp    # Notifications tab: reload gp_clinical.xml (RESTARTS OpenMRS)
+```
+
+`--fix-gp` handles a second restore problem. Initializer keeps a checksum of
+`masterdata/configuration/globalproperties/gp_clinical.xml` in the openmrs data volume, so after a DB
+restore it never re-loads that file. The DB is then missing `emrapi.sqlSearch.labResultNotifications`
+(Notifications tab) and `emrapi.sqlSearch.emergencyMedicationToAcknowledge`. The option saves and deletes
+`gp_clinical.checksum`, restarts OpenMRS, and waits for both properties to appear. To undo, delete the two
+properties; the saved checksum is in `backups/`.
+
+## Manual way
+
 Run every block from this folder on the Docker host:
 
 ```bash
